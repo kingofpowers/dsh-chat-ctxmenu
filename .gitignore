@@ -9,3 +9,6 @@ release/
 # Editors / OS
 .DS_Store
 Thumbs.db
+
+# Local logs
+*.log
