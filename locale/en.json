@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Chat Context Menu",
+    "description": "Right-click conversation content to copy text or the whole message; on a file path, open it, reveal it in the file manager, open it with another app, and copy its path."
+  }
+}

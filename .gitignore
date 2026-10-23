@@ -1,0 +1,11 @@
+# Local development artefacts
+.market/
+.verify/
+.repro/
+.inspect/
+release/
+*.tgz
+
+# Editors / OS
+.DS_Store
+Thumbs.db

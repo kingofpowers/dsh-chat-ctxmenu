@@ -1,0 +1,57 @@
+{
+  "name": "dsh-chat-ctxmenu",
+  "version": "1.0.3",
+  "type": "module",
+  "description": "Right-click conversation content to copy text or images, open file paths, and reveal them in the file manager.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingofpowers/dsh-chat-ctxmenu.git"
+  },
+  "homepage": "https://github.com/kingofpowers/dsh-chat-ctxmenu#readme",
+  "bugs": {
+    "url": "https://github.com/kingofpowers/dsh-chat-ctxmenu/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "context-menu",
+    "right-click",
+    "file-menu",
+    "copy-image"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

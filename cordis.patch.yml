@@ -1,0 +1,5 @@
+# dsh-chat-ctxmenu bundle: one Host row. The browser half is discovered through
+# the package's `dsh.client` declaration and served from `./client`.
+- insert:
+    - id: chat-ctxmenu
+      name: dsh-chat-ctxmenu
