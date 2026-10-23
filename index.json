@@ -1,0 +1,57 @@
+{
+  "format": 1,
+  "title": {
+    "en": "kingofpowers DSH plugins",
+    "zh": "kingofpowers 的 DSH 插件"
+  },
+  "description": {
+    "en": "Plugins for DeepSeek Harness by kingofpowers.",
+    "zh": "kingofpowers 发布的 DeepSeek Harness 插件。"
+  },
+  "metadata": {
+    "categories": {
+      "ui": { "title": { "en": "Interface", "zh": "界面" } },
+      "tools": { "title": { "en": "Tools", "zh": "工具" } }
+    },
+    "labels": {
+      "context-menu": { "title": { "en": "Context menu", "zh": "右键菜单" } },
+      "copy": { "title": { "en": "Copy", "zh": "复制" } },
+      "files": { "title": { "en": "Files", "zh": "文件" } },
+      "images": { "title": { "en": "Images", "zh": "图片" } }
+    },
+    "sortKeys": {
+      "updated": { "title": { "en": "Updated", "zh": "更新时间" }, "order": "desc" }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-chat-ctxmenu",
+      "title": {
+        "en": "Chat Context Menu",
+        "zh": "对话右键菜单"
+      },
+      "description": {
+        "en": "Right-click conversation content to copy text or images, open file paths, and reveal them in the file manager. Path candidates are verified on the Host before any open action appears.",
+        "zh": "右键对话内容即可复制文字或图片；识别文件路径并一键打开、在文件管理器中显示、用其他应用打开、复制路径；链接可打开或复制。所有候选路径先由 Host 校验存在性。"
+      },
+      "icon": "icon.svg",
+      "author": "kingofpowers",
+      "homepage": "https://github.com/kingofpowers/dsh-chat-ctxmenu",
+      "repository": {
+        "url": "https://github.com/kingofpowers/dsh-chat-ctxmenu"
+      },
+      "metadata": {
+        "category": "ui",
+        "labels": ["context-menu", "copy", "files", "images"],
+        "sortKeys": { "updated": 1792753399 }
+      },
+      "versions": [
+        {
+          "version": "1.0.3",
+          "publishTimestamp": 1792753399,
+          "source": { "type": "npm" }
+        }
+      ]
+    }
+  ]
+}
