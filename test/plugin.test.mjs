@@ -12,6 +12,7 @@
  * looking at the running app.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 
 const results = { passed: 0, failed: [] }
@@ -28,6 +29,26 @@ async function check(name, fn) {
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+// ---------------------------------------------------------------------------
+// Package contract
+// ---------------------------------------------------------------------------
+
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+
+await check('package declares the DSH 0.2.2 client contract', () => {
+  assert.equal(manifest.engines?.dsh, '>=0.2.2-rc.1 <0.3.0')
+  assert.deepEqual(manifest.dsh?.client?.inject, [
+    '@deepseek-ai/dsh-client-locale',
+    '@deepseek-ai/dsh-client-ui-context-menu',
+  ])
+  assert.equal(manifest.exports?.['./client'], './client.js')
+  assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
+  assert.ok(Array.isArray(manifest.files), 'files must be an array')
+  for (const entry of ['index.js', 'client.js', 'cordis.patch.yml']) {
+    assert.ok(manifest.files.includes(entry), `files must include ${entry}`)
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Host half
