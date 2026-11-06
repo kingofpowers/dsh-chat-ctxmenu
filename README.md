@@ -68,11 +68,11 @@ Host（Node，仅保留官方菜单拿不到的能力）
 
 ### 从 npm 安装
 
-> 截至本分支，npm `latest` 仍是 **1.0.3**（自绘菜单，需要 DSH 0.2.1）。**2.0.0 尚未发布**；发布后再用下面的命令，或显式 `dsh-chat-ctxmenu@2.0.0`。在此之前请用本地目录 / tarball 安装。
-
 ```bash
 dsh plugin --profile desktop add dsh-chat-ctxmenu@2.0.0
 ```
+
+`latest` 已是 **2.0.0**（需要 DSH >= 0.2.2-rc.1）；仍在使用 0.2.1 的机器请显式安装 1.0.3，见“升级说明”。
 
 或在会话中让 agent 执行：
 

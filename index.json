@@ -31,8 +31,8 @@
         "zh": "对话右键菜单"
       },
       "description": {
-        "en": "Right-click conversation content to copy text or images, open file paths, and reveal them in the file manager. Path candidates are verified on the Host before any open action appears.",
-        "zh": "右键对话内容即可复制文字或图片；识别文件路径并一键打开、在文件管理器中显示、用其他应用打开、复制路径；链接可打开或复制。所有候选路径先由 Host 校验存在性。"
+        "en": "Adds chat-specific actions to the official DSH 0.2.2 context menu: copy the whole message, copy a relative path, and open a file with any registered application. Paths in message prose are verified on the Host first.",
+        "zh": "在 DSH 官方右键菜单中补充对话专用条目：复制整条消息、复制相对路径、用其他应用打开 ▸；正文里的路径会先由 Host 校验存在性，再交给官方文件菜单。"
       },
       "icon": "icon.svg",
       "author": "kingofpowers",
@@ -43,12 +43,12 @@
       "metadata": {
         "category": "ui",
         "labels": ["context-menu", "copy", "files", "images"],
-        "sortKeys": { "updated": 1792753399 }
+        "sortKeys": { "updated": 1793942714 }
       },
       "versions": [
         {
-          "version": "1.0.3",
-          "publishTimestamp": 1792753399,
+          "version": "2.0.0",
+          "publishTimestamp": 1793942714,
           "source": { "type": "npm" }
         }
       ]
