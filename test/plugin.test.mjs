@@ -413,13 +413,16 @@ Object.defineProperty(globalThis, 'navigator', {
   value: { language: 'zh-CN', clipboard: { writeText: async (text) => { clipboard.writes.push(text) } } },
 })
 globalThis.document = {
-  addEventListener(type, fn) {
-    if (documentListeners[type] !== undefined) documentListeners[type].push(fn)
+  addEventListener(type, fn, options) {
+    if (documentListeners[type] === undefined) return
+    const capture = options === true || (typeof options === 'object' && options !== null && options.capture === true)
+    documentListeners[type].push({ fn, capture })
   },
-  removeEventListener(type, fn) {
+  removeEventListener(type, fn, options) {
     const list = documentListeners[type]
     if (list === undefined) return
-    const index = list.indexOf(fn)
+    const capture = options === true || (typeof options === 'object' && options !== null && options.capture === true)
+    const index = list.findIndex((entry) => entry.fn === fn && entry.capture === capture)
     if (index !== -1) list.splice(index, 1)
   },
   caretPositionFromPoint: () => caret,
@@ -430,7 +433,8 @@ globalThis.fetch = async (_url, options) => {
   const request = JSON.parse(options.body)
   const reply = rpcReplies.get(request.action)
   if (reply === undefined) return { ok: false, status: 404, text: async () => '' }
-  return { ok: true, status: 200, text: async () => JSON.stringify(typeof reply === 'function' ? reply(request.args) : reply) }
+  const value = typeof reply === 'function' ? await reply(request.args) : reply
+  return { ok: true, status: 200, text: async () => JSON.stringify(value) }
 }
 
 await import('../client.js')
@@ -459,6 +463,12 @@ function makeClientCtx() {
     notices: [],
     icons: [],
     effects: [],
+    sessionsSnapshot: {
+      ids: ['session-1'],
+      byId: {
+        'session-1': { cwd: 'C:\\workspace', retainedBy: { mainView: 1 } },
+      },
+    },
   }
   const services = {
     contextMenus: {
@@ -475,12 +485,7 @@ function makeClientCtx() {
     },
     sessions: {
       list: {
-        getSnapshot: () => ({
-          ids: ['session-1'],
-          byId: {
-            'session-1': { cwd: 'C:\\workspace', retainedBy: { mainView: 1 } },
-          },
-        }),
+        getSnapshot: () => state.sessionsSnapshot,
       },
     },
     locale: {
@@ -545,9 +550,25 @@ await check('client registers an icon component for every contributed icon key',
   }
 })
 
-await check('fallback listener is a bubble-phase document listener', () => {
-  assert.equal(documentListeners.contextmenu.length, 1)
+await check('fallback registers one capture-phase invalidator and one bubble-phase handler', () => {
+  assert.equal(documentListeners.contextmenu.length, 2)
+  assert.equal(documentListeners.contextmenu.filter((entry) => entry.capture === true).length, 1)
+  assert.equal(documentListeners.contextmenu.filter((entry) => entry.capture !== true).length, 1)
 })
+
+function captureHandlers() {
+  return documentListeners.contextmenu.filter((entry) => entry.capture === true).map((entry) => entry.fn)
+}
+
+function bubbleHandler() {
+  return documentListeners.contextmenu.find((entry) => entry.capture !== true)?.fn
+}
+
+/** Browser order: capture listeners first, then the bubble listener. */
+function dispatchContextMenu(event) {
+  for (const fn of captureHandlers()) fn(event)
+  bubbleHandler()?.(event)
+}
 
 function contextMenuEvent(target, overrides = {}) {
   const event = {
@@ -603,7 +624,7 @@ function editableTarget() {
 await check('fallback never steals a gesture the official menu already handled', async () => {
   client.state.opened.length = 0
   const event = contextMenuEvent(conversationTarget(), { defaultPrevented: true })
-  documentListeners.contextmenu[0](event)
+  dispatchContextMenu(event)
   await flush()
   assert.equal(client.state.opened.length, 0)
   assert.equal(event.prevented, 0)
@@ -612,7 +633,7 @@ await check('fallback never steals a gesture the official menu already handled',
 await check('fallback leaves workspace and other surfaces to the official UI', async () => {
   client.state.opened.length = 0
   const event = contextMenuEvent(workspaceTarget())
-  documentListeners.contextmenu[0](event)
+  dispatchContextMenu(event)
   await flush()
   assert.equal(client.state.opened.length, 0)
   assert.equal(event.prevented, 0)
@@ -621,7 +642,7 @@ await check('fallback leaves workspace and other surfaces to the official UI', a
 await check('fallback ignores editable fields', async () => {
   client.state.opened.length = 0
   const event = contextMenuEvent(editableTarget())
-  documentListeners.contextmenu[0](event)
+  dispatchContextMenu(event)
   await flush()
   assert.equal(client.state.opened.length, 0)
   assert.equal(event.prevented, 0)
@@ -633,7 +654,7 @@ await check('plain conversation text opens the plugin chatMessage target', async
   rpcReplies.clear()
   client.state.opened.length = 0
   const event = contextMenuEvent(conversationTarget())
-  documentListeners.contextmenu[0](event)
+  dispatchContextMenu(event)
   await flush()
   assert.equal(event.prevented, 1)
   assert.equal(client.state.opened.length, 1)
@@ -656,7 +677,7 @@ await check('a verified prose path opens the official file menu with the resolve
   }))
   client.state.opened.length = 0
   const event = contextMenuEvent(conversationTarget())
-  documentListeners.contextmenu[0](event)
+  dispatchContextMenu(event)
   await flush()
   assert.equal(client.state.opened.length, 1)
   const opened = client.state.opened[0]
@@ -673,10 +694,60 @@ await check('a missing prose path falls back to the chatMessage target', async (
   rpcReplies.set('resolve', () => ({ ok: true, results: [{ exists: false, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] }))
   client.state.opened.length = 0
   const event = contextMenuEvent(conversationTarget())
-  documentListeners.contextmenu[0](event)
+  dispatchContextMenu(event)
   await flush()
   assert.equal(client.state.opened.length, 1)
   assert.equal(client.state.opened[0].target.kind, 'chatMessage')
+})
+
+await check('a URL in prose opens the official url target', async () => {
+  const text = 'see https://example.test/a?b=1 now'
+  caret = { offsetNode: { nodeType: 3, data: text }, offset: 20 }
+  setMessageText(text)
+  rpcReplies.clear()
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget())
+  dispatchContextMenu(event)
+  await flush()
+  assert.equal(client.state.opened.length, 1)
+  assert.equal(client.state.opened[0].target.kind, 'url')
+  assert.deepEqual(client.state.opened[0].target.value, { sessionId: 'session-1', url: 'https://example.test/a?b=1' })
+})
+
+await check('chatMessage opens even when no main-view session is detected', async () => {
+  caret = null
+  setMessageText('hello world')
+  rpcReplies.clear()
+  const previous = client.state.sessionsSnapshot
+  client.state.sessionsSnapshot = { ids: [], byId: {} }
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget())
+  dispatchContextMenu(event)
+  await flush()
+  client.state.sessionsSnapshot = previous
+  assert.equal(event.prevented, 1)
+  assert.equal(client.state.opened.length, 1)
+  assert.equal(client.state.opened[0].target.kind, 'chatMessage')
+  assert.equal(client.state.opened[0].target.value.sessionId, null)
+})
+
+await check('a newer gesture cancels a fallback whose resolve is still pending', async () => {
+  caret = { offsetNode: { nodeType: 3, data: 'see src/app.ts' }, offset: 8 }
+  setMessageText('see src/app.ts')
+  let release = () => {}
+  rpcReplies.clear()
+  rpcReplies.set('resolve', () => new Promise((resolve) => {
+    release = () => resolve({ ok: true, results: [{ exists: true, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] })
+  }))
+  client.state.opened.length = 0
+  dispatchContextMenu(contextMenuEvent(conversationTarget()))
+  await flush()
+  // A newer official gesture (defaultPrevented) must invalidate the pending one.
+  dispatchContextMenu(contextMenuEvent(conversationTarget(), { defaultPrevented: true }))
+  release()
+  await flush()
+  await flush()
+  assert.equal(client.state.opened.length, 0)
 })
 
 function contribution(id) {
@@ -734,7 +805,7 @@ await check('open-with contribution lists registered applications and the OS cho
   assert.deepEqual(actions[0].children.map((child) => child.id), [
     'application:C:\\Program Files\\App\\app.exe',
     'application:Microsoft.WindowsNotepad_8wekyb3d8bbwe!App',
-    'application:choose',
+    'application:__choose__',
   ])
 })
 

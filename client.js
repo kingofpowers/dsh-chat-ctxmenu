@@ -186,9 +186,14 @@ window.__ModuleLoader__.load({
       }
 
       tokens.sort((left, right) => (left.start - right.start) || (right.end - right.start) - (left.end - left.start))
+      // Keep one entry per occurrence: the caret hit test needs the offsets of
+      // every occurrence, not just the first spelling of a repeated token.
       const deduped = []
+      const seen = new Set()
       for (const token of tokens) {
-        if (deduped.some((entry) => entry.raw.toLowerCase() === token.raw.toLowerCase())) continue
+        const key = `${token.start}:${token.raw.toLowerCase()}`
+        if (seen.has(key)) continue
+        seen.add(key)
         deduped.push(token)
       }
       return deduped
@@ -347,11 +352,21 @@ window.__ModuleLoader__.load({
       return { href, text: String(anchor.textContent ?? '').trim() }
     }
 
+    /**
+     * `scanPaths` deliberately excludes URL tokens (they are not file paths), so
+     * a URL under the caret is looked up in the caret's own text instead. When
+     * the pointer is not on a text node, an unambiguous URL in the surrounding
+     * block wins.
+     */
     function detectTextUrl(target, caret) {
       if (caret !== null) {
-        const hit = caret.tokens.find((token) => caret.offset >= token.start - 1 && caret.offset <= token.end + 1)
-        if (hit !== undefined) {
-          if (/^https?:\/\//iu.test(hit.raw)) return { href: hit.raw, text: hit.raw }
+        for (const match of caret.text.matchAll(/\bhttps?:\/\/[^\s<>"'`）)\]】,，。；;]+/giu)) {
+          const start = match.index
+          const end = start + match[0].length
+          if (caret.offset < start - 1 || caret.offset > end + 1) continue
+          const href = trimToken(match[0])
+          if (href.length < 8) continue
+          return { href, text: href }
         }
         return null
       }
@@ -463,7 +478,8 @@ window.__ModuleLoader__.load({
 
     /**
      * The main-view Session is the one the conversation renders. The official
-     * list snapshot already carries local retain counts, so no extra
+     * list snapshot carries local retain counts on every row (`ids` holds the
+     * Host order while `byId` also keeps retained subagent rows), so no extra
      * subscription is created; `useSessions` is not available outside render.
      */
     function currentSessionId(sessions) {
@@ -471,13 +487,20 @@ window.__ModuleLoader__.load({
         if (sessions === undefined || sessions === null) return undefined
         const snapshot = typeof sessions.list?.getSnapshot === 'function' ? sessions.list.getSnapshot() : undefined
         if (snapshot === undefined || snapshot === null) return undefined
-        if (typeof snapshot.current === 'string') return snapshot.current
-        if (!Array.isArray(snapshot.ids)) return undefined
-        for (const id of snapshot.ids) {
-          const row = snapshot.byId !== undefined && snapshot.byId !== null ? snapshot.byId[id] : undefined
-          if (row === undefined || row === null) continue
-          const retained = row.retainedBy !== undefined && row.retainedBy !== null ? row.retainedBy.mainView : undefined
-          if (typeof retained === 'number' && retained > 0) return id
+        const mainView = (row) => row !== undefined && row !== null && row.retainedBy !== undefined && row.retainedBy !== null
+          ? row.retainedBy.mainView
+          : undefined
+        if (Array.isArray(snapshot.ids)) {
+          for (const id of snapshot.ids) {
+            const retained = mainView(snapshot.byId !== undefined && snapshot.byId !== null ? snapshot.byId[id] : undefined)
+            if (typeof retained === 'number' && retained > 0) return id
+          }
+        }
+        if (snapshot.byId !== undefined && snapshot.byId !== null) {
+          for (const [id, row] of Object.entries(snapshot.byId)) {
+            const retained = mainView(row)
+            if (typeof retained === 'number' && retained > 0) return id
+          }
         }
         return undefined
       } catch {
@@ -718,7 +741,7 @@ window.__ModuleLoader__.load({
             }
             if (reply.canOpenWithDialog === true) {
               children.push({
-                id: 'application:choose',
+                id: 'application:__choose__',
                 label: t('chooseApp'),
                 failureLabel: t('openFailed'),
                 run: () => openWithDialog(absolute, cwd, target.sessionId),
@@ -837,9 +860,19 @@ window.__ModuleLoader__.load({
               openTarget('url', { sessionId, url: prepared.link.href }, point)
               return
             }
-            if (sessionId !== undefined && (prepared.selectionText !== '' || prepared.messageText !== '')) {
-              openTarget('chatMessage', { sessionId, selectionText: prepared.selectionText, messageText: prepared.messageText }, point)
+            // The chatMessage contributions only read the captured text, so this
+            // menu must open even when the main-view Session cannot be detected;
+            // otherwise preventDefault would swallow the native menu for nothing.
+            if (prepared.selectionText !== '' || prepared.messageText !== '') {
+              openTarget('chatMessage', { sessionId: sessionId ?? null, selectionText: prepared.selectionText, messageText: prepared.messageText }, point)
             }
+          }
+
+          // Every contextmenu gesture — official, workspace, or ours — invalidates
+          // a fallback whose Host resolve is still in flight. Without this a slow
+          // prose resolve could open its menu after a newer official menu appeared.
+          const invalidatePendingGesture = () => {
+            gesture += 1
           }
 
           const onContextMenu = (event) => {
@@ -875,12 +908,15 @@ window.__ModuleLoader__.load({
 
             event.preventDefault()
             event.stopPropagation()
-            const token = (gesture += 1)
-            void openSharedMenu(prepared, token)
+            void openSharedMenu(prepared, gesture)
           }
 
+          document.addEventListener('contextmenu', invalidatePendingGesture, true)
           document.addEventListener('contextmenu', onContextMenu)
-          return () => document.removeEventListener('contextmenu', onContextMenu)
+          return () => {
+            document.removeEventListener('contextmenu', invalidatePendingGesture, true)
+            document.removeEventListener('contextmenu', onContextMenu)
+          }
         }, 'chat-ctxmenu: prose fallback')
       },
     }
