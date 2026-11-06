@@ -141,7 +141,21 @@ GET /dsh-chat-ctxmenu/status                 # Host 半：应返回 ok:true，re
 node --test
 ```
 
-覆盖：Host 路由注册与状态（`rev=5`）、相对路径/`~` 解析、应用列表、`openWith` 注册校验、已移除动作、loopback/同源/跨站/请求体上限、卸载清理；Client 端官方贡献项的目标与 id、图标注册、兜底监听不抢官方手势（`defaultPrevented` / 工作区 / 输入框）、正文纯文本 → `chatMessage`、正文路径 → 官方 `file` 菜单、缺失路径回退、相对路径与打开方式条目、卸载清理。
+覆盖：Host 路由注册与状态（`rev=5`）、相对路径/`~` 解析、应用列表、`openWith` 注册校验、已移除动作、loopback/同源/跨站/请求体上限、卸载清理；Client 端官方贡献项的目标与 id、图标注册、capture/bubble 监听分工、兜底监听不抢官方手势（`defaultPrevented` / 工作区 / 输入框）、pending resolve 被新手势取消、正文纯文本 → `chatMessage`、无 Session 时仍可复制、正文路径 → 官方 `file` 菜单、正文 URL → 官方 `url` 菜单、缺失路径回退、相对路径与打开方式条目、剪贴板后备、卸载清理；包声明（`engines.dsh` / `dsh.client.inject` / `exports` / `files`）。
+
+## 发布
+
+```bash
+cd plugins/dsh-chat-ctxmenu
+# 版本号已在 package.json 中；发布前确认 engines.dsh 与目标 DSH 一致
+DSH_VERSION=0.2.2-rc.1 node ../../tooling/check-all.mjs dsh-chat-ctxmenu
+npm pack --dry-run          # 核对 files 清单（9 个文件）
+npm publish
+# 发布完成后把 2.0.0 的版本条目（version / publishTimestamp / 描述）补进 index.json，再提交
+git push origin main
+```
+
+本机仍装 0.2.1-rc.5 时，`check-all` 需要 `DSH_VERSION=0.2.2-rc.1` 覆盖（否则 `engines.dsh` 会被判为不满足）；这是本机环境差异，不是插件问题。
 
 ## 文件结构
 
