@@ -6,6 +6,10 @@
 release/
 *.tgz
 
+# Development worktrees / code graph indexes (never committed)
+.worktree/
+.codegraph/
+
 # Editors / OS
 .DS_Store
 Thumbs.db

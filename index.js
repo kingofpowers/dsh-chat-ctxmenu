@@ -1,20 +1,23 @@
 /**
  * dsh-chat-ctxmenu — Host half.
  *
- * The browser half renders a right-click menu on conversation content and needs
- * three host-side capabilities:
+ * DSH 0.2.2's official context menu owns the conversation and workspace
+ * right-click surfaces; this plugin contributes only the actions the official
+ * menu cannot provide. Three host-side capabilities remain:
  *
- *   1. resolve  — turn a path-shaped piece of message text into a host absolute
- *                 path and tell whether it exists (and whether it is a folder).
- *   2. open     — open a file/folder with the OS default program, or reveal it
- *                 in the file manager.
- *   3. apps     — list the applications the OS registered for that exact file,
- *                 so "Open with…" can offer the same choices as the shell.
+ *   1. resolve — verify a path-shaped piece of message prose against the
+ *                Session working directory, so a right-click can hand the
+ *                official file/directory menu a target that really exists.
+ *   2. apps    — list the applications the OS registered for that exact file,
+ *                so the contributed "Open with ▸" submenu matches the shell.
+ *   3. open    — launch one of those applications (and the OS "choose another
+ *                app" dialog), reusing the Harness' authorized path-opening
+ *                channel (`sessionController.openWorkspacePath` /
+ *                `workspacePathApplications`) with a direct-spawn fallback for
+ *                Windows handlers that the native adapter cannot invoke.
  *
- * Opening and app listing reuse the Harness' own authorized path-opening channel
- * (`sessionController.openWorkspacePath` / `workspacePathApplications`), which is
- * exactly what the conversation header's "Open In…" control uses. A direct
- * spawn fallback keeps the menu useful on hosts where that service is absent.
+ * Opening, revealing and copying paths are the official `ui-open-in-app`
+ * contributions; this plugin does not duplicate them.
  *
  * Transport: POST /dsh-chat-ctxmenu/rpc  { action, args } -> { ok, ... }
  *            GET  /dsh-chat-ctxmenu/status -> diagnostics (also used for checks)
@@ -42,15 +45,6 @@ const HOST_PLATFORM = (() => {
     return 'unknown'
   }
 })()
-
-// Native refusals that must never be bypassed by a direct spawn: the Harness
-// decided this host may not open the path (invalid mapping, wrong principal).
-const TERMINAL_NATIVE_ERRORS = new Set([
-  'native-open-unavailable',
-  'native-open-refused',
-  'gateway/bad-request',
-  'gateway/cancelled',
-])
 
 function asRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
@@ -116,25 +110,6 @@ function relativePath(cwd, abs) {
   if (lowerTarget === lowerBase) return '.'
   if (lowerTarget.startsWith(lowerBase + '/')) return target.slice(base.length + 1)
   return ''
-}
-
-/** Explorer splits its command line at `,` and `=`; encode them like the Harness does. */
-function explorerTarget(path) {
-  return path.replace(/,/g, '%2C').replace(/=/g, '%3D')
-}
-
-function validateExternalUrl(value) {
-  if (typeof value !== 'string' || value === '') return undefined
-  if (/[\u0000-\u001f\u007f]/u.test(value)) return undefined
-  let url
-  try {
-    url = new URL(value)
-  } catch {
-    return undefined
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:') return undefined
-  if (url.protocol !== 'mailto:' && url.hostname === '') return undefined
-  return url.href
 }
 
 async function readRequestBody(request, limit) {
@@ -375,44 +350,6 @@ export function apply(ctx) {
     }
   }
 
-  const fallbackOpen = async (absolute) => {
-    if (HOST_PLATFORM === 'win32' || isWindowsPath(absolute)) {
-      if (await spawnDetached(['explorer.exe', absolute])) return { ok: true }
-      return { ok: false, error: 'no-native-opener' }
-    }
-    if (await spawnDetached(['open', absolute])) return { ok: true }
-    if (await spawnDetached(['xdg-open', absolute])) return { ok: true }
-    return { ok: false, error: 'no-native-opener' }
-  }
-
-  const fallbackReveal = async (absolute, isDir) => {
-    if (HOST_PLATFORM === 'win32' || isWindowsPath(absolute)) {
-      const argv = isDir ? ['explorer.exe', absolute] : ['explorer.exe', `/select,${explorerTarget(absolute)}`]
-      if (await spawnDetached(argv)) return { ok: true }
-      return { ok: false, error: 'no-native-opener' }
-    }
-    if (!isDir && (await spawnDetached(['open', '-R', absolute]))) return { ok: true }
-    if (await spawnDetached(['open', absolute])) return { ok: true }
-    if (await spawnDetached(['xdg-open', absolute])) return { ok: true }
-    return { ok: false, error: 'no-native-opener' }
-  }
-
-  const openPath = async (absolute, mode, isDir) => {
-    const native = await nativeOpen(absolute, mode)
-    if (native !== null) {
-      if (native.ok) return native
-      // Authorization and validation refusals are terminal. Only an absent
-      // service or an explicit opener failure may use the direct spawn path.
-      if (TERMINAL_NATIVE_ERRORS.has(native.error)) return native
-      if (typeof native.error === 'string' && native.error.startsWith('gateway/') && native.error !== 'gateway/internal') return native
-      const fallback = mode === 'reveal' ? await fallbackReveal(absolute, isDir) : await fallbackOpen(absolute)
-      if (fallback.ok) return fallback
-      return { ...native, fallbackError: fallback.error }
-    }
-    if (mode === 'reveal') return fallbackReveal(absolute, isDir)
-    return fallbackOpen(absolute)
-  }
-
   const appCache = new Map()
   const APP_CACHE_TTL_MS = 60000
   const APP_CACHE_MAX = 32
@@ -458,22 +395,6 @@ export function apply(ctx) {
     return { ok: false, error: 'no-open-with-dialog' }
   }
 
-  const openExternal = async (url) => {
-    const validated = validateExternalUrl(url)
-    if (validated === undefined) return { ok: false, error: 'unsupported-url' }
-    if (HOST_PLATFORM === 'win32') {
-      const literal = validated.replace(/'/g, "''")
-      if (await spawnDetached(['powershell.exe', '-NoProfile', '-Command', `Start-Process '${literal}'`])) return { ok: true }
-      return { ok: false, error: 'no-browser-opener' }
-    }
-    if (HOST_PLATFORM === 'darwin') {
-      if (await spawnDetached(['open', validated])) return { ok: true }
-      return { ok: false, error: 'no-browser-opener' }
-    }
-    if (await spawnDetached(['xdg-open', validated])) return { ok: true }
-    return { ok: false, error: 'no-browser-opener' }
-  }
-
   const describeOrFail = async (record) => {
     const raw = asString(record.path)
     if (raw === undefined) return { error: { ok: false, error: 'path-required' } }
@@ -491,20 +412,6 @@ export function apply(ctx) {
       const results = []
       for (const input of inputs) results.push(await describePath(input, cwd))
       return { ok: true, cwd: cwd ?? null, results }
-    },
-
-    async open(args) {
-      const { described, error } = await describeOrFail(asRecord(args))
-      if (error !== undefined) return error
-      if (!described.exists) return { ok: false, error: 'path-missing', path: described.absolute }
-      return openPath(described.absolute, 'open', described.isDir)
-    },
-
-    async reveal(args) {
-      const { described, error } = await describeOrFail(asRecord(args))
-      if (error !== undefined) return error
-      if (!described.exists) return { ok: false, error: 'path-missing', path: described.absolute }
-      return openPath(described.absolute, 'reveal', described.isDir)
     },
 
     async apps(args) {
@@ -549,13 +456,6 @@ export function apply(ctx) {
       return openWithDialog(described.absolute)
     },
 
-    async openUrl(args) {
-      const record = asRecord(args)
-      const url = asString(record.url)
-      if (url === undefined) return { ok: false, error: 'url-required' }
-      return openExternal(url.trim())
-    },
-
     async status() {
       const info = await platformInfo()
       const native = getSessionController() !== undefined
@@ -569,7 +469,7 @@ export function apply(ctx) {
         relativePathResolvedByHost: true,
         maxPaths: MAX_PATHS,
         version: 1,
-        rev: 4,
+        rev: 5,
       }
     },
   }

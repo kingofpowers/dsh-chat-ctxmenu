@@ -1,21 +1,40 @@
 /**
  * dsh-chat-ctxmenu — Client half (Web bundle).
  *
- * Registers one `shell.overlay` entry that owns a right-click menu for
- * conversation content:
+ * DSH 0.2.2 ships the official context-menu framework
+ * (`@deepseek-ai/dsh-client-ui-context-menu`). That framework owns every
+ * right-click gesture it is bound to, plus the shared menu presentation
+ * (positioning, keyboard navigation, icons, toasts). This plugin no longer
+ * renders a menu of its own and no longer installs a capture-phase listener:
+ * the gesture hook belongs to the official feature.
  *
- *   - Copy: the current text selection, or the whole message.
- *   - Files: when the right-click lands on (or next to) a path in message text,
- *     a produced-file chip, an inline reference, or a tool card, the menu offers
- *     Open / Reveal in file manager / Open with ▸ / Copy path / Copy relative path.
- *   - Links: Open in browser / Copy link.
+ * What remains ours, contributed into the official menu:
  *
- * Path detection is caret-first: the token under the pointer wins, then an
- * element hint (title attribute), then the surrounding text block. Relative
- * paths are resolved against the Session working directory by the Host half and
- * only offered once the Host confirms the file exists, so prose like "and/or"
- * never produces a file menu.
+ *   - `file`    → "Copy relative path" and "Open with ▸" (the applications the
+ *                 system registered for that file, including the direct
+ *                 executable launch the Windows shell handlers do not perform).
+ *   - `directory` → "Copy relative path".
+ *   - `image`   → "Copy image link" (an http(s) source, never a blob URL).
+ *   - `chatMessage` → a plugin-defined target used for plain message text:
+ *                 "Copy selection" and "Copy whole message".
+ *
+ * One bubble-phase fallback listener covers gestures the official chat surface
+ * does not claim: the official triggers sit on their own elements and call
+ * `preventDefault()`, so this listener sees `event.defaultPrevented` and backs
+ * off. Gestures outside conversation content — the workspace rows, the
+ * workspace file tree, any other surface — are left entirely to the official
+ * UI. For conversation prose the fallback only decides *which official target*
+ * the click belongs to: a path-shaped token (relative path, `~`, UNC,
+ * `path:line`, bare filename) is verified by the Host and opens the official
+ * `file`/`directory` menu; a URL opens the official `url` menu; anything else
+ * opens the plugin's `chatMessage` menu.
+ *
+ * Transport: POST /dsh-chat-ctxmenu/rpc  { action, args } -> { ok, ... }
+ * Only the actions the official menu cannot provide live there: `resolve`
+ * (prose path verification), `apps` / `openWith` / `openWithDialog`, and
+ * `status` for diagnostics.
  */
+
 window.__ModuleLoader__.load({
   id: 'dsh-chat-ctxmenu',
   factory(require) {
@@ -23,36 +42,21 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     const RPC_ENDPOINT = '/dsh-chat-ctxmenu/rpc'
+    const RPC_TIMEOUT_MS = 6000
+    const MESSAGE_SELECTOR = '[data-chat-flow-kind]'
+    const EDITABLE_SELECTOR = 'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
+    const BLOCK_SELECTOR = 'p, li, pre, blockquote, td, th, h1, h2, h3, h4, h5, h6'
+    const URL_SCHEMES = /^(?:https?:\/\/|mailto:)/i
 
     const STRINGS = {
       zh: {
-        titleText: '对话内容',
-        open: '打开',
-        reveal: '在文件管理器中显示',
         openWith: '用其他应用打开',
         chooseApp: '选择其他程序…',
-        appsLoading: '正在读取应用列表…',
-        appsEmpty: '没有找到可用应用',
         defaultApp: '默认',
-        copyPath: '复制路径',
         copyRelative: '复制相对路径',
         copySelection: '复制选中内容',
         copyMessage: '复制整条消息',
-        copyImage: '复制图片',
         copyImageLink: '复制图片链接',
-        saveImage: '另存为图片',
-        imageLabel: '图片',
-        imageCopied: '已复制图片',
-        imageCopiedAsLink: '剪贴板不支持图片，已复制图片链接',
-        copyImageFailed: '复制图片失败',
-        saveImageFailed: '保存图片失败',
-        saveStarted: '已开始下载',
-        openLink: '在浏览器中打开',
-        copyLink: '复制链接',
-        resolving: '正在确认路径…',
-        missing: '未找到，无法打开',
-        outside: '不在会话工作区内',
-        unsupported: '当前环境不能在本机打开文件',
         copied: '已复制',
         copyFailed: '复制失败',
         openFailed: '打开失败',
@@ -60,37 +64,15 @@ window.__ModuleLoader__.load({
         errAppMissing: '找不到这个程序（可能已卸载或移动）',
         errAppLaunchFailed: '这个程序没能启动',
         errSystemOpen: '系统打开接口调用失败',
-        folder: '文件夹',
-        folderTag: '文件夹',
       },
       en: {
-        titleText: 'Conversation',
-        open: 'Open',
-        reveal: 'Show in file manager',
         openWith: 'Open with',
         chooseApp: 'Choose another app…',
-        appsLoading: 'Reading application list…',
-        appsEmpty: 'No application found',
         defaultApp: 'default',
-        copyPath: 'Copy path',
         copyRelative: 'Copy relative path',
         copySelection: 'Copy selection',
         copyMessage: 'Copy whole message',
-        copyImage: 'Copy image',
         copyImageLink: 'Copy image link',
-        saveImage: 'Save image as…',
-        imageLabel: 'Image',
-        imageCopied: 'Image copied',
-        imageCopiedAsLink: 'Clipboard does not accept images; copied the image link instead',
-        copyImageFailed: 'Could not copy the image',
-        saveImageFailed: 'Could not save the image',
-        saveStarted: 'Download started',
-        openLink: 'Open in browser',
-        copyLink: 'Copy link',
-        resolving: 'Resolving path…',
-        missing: 'Not found, cannot open',
-        outside: 'Outside the session workspace',
-        unsupported: 'This environment cannot open files on the host',
         copied: 'Copied',
         copyFailed: 'Copy failed',
         openFailed: 'Open failed',
@@ -98,76 +80,17 @@ window.__ModuleLoader__.load({
         errAppMissing: 'That application could not be found (uninstalled or moved?)',
         errAppLaunchFailed: 'That application did not start',
         errSystemOpen: 'The system open call failed',
-        folder: 'Folder',
-        folderTag: 'Folder',
       },
     }
 
-    const MENU_CSS = `
-.ctxm-root{position:fixed;z-index:2147483000;font-family:inherit;font-size:13px;line-height:20px;pointer-events:auto}
-.ctxm-menu{position:fixed;display:flex;flex-direction:column;min-width:216px;max-width:380px;padding:4px;box-sizing:border-box;background:var(--dsw-alias-bg-overlay,#1b1b1f);color:var(--dsw-alias-label-primary,#f5f5f7);border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.18));border-radius:10px;box-shadow:0 14px 36px rgba(0,0,0,.34),0 2px 8px rgba(0,0,0,.2);user-select:none;outline:none}
-.ctxm-head{padding:5px 10px 7px;margin-bottom:3px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.1));min-width:0}
-.ctxm-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px}
-.ctxm-sub{margin-top:1px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary,rgba(255,255,255,.62));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;direction:ltr}
-.ctxm-item{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;text-align:left;padding:5px 10px;border:0;background:transparent;color:inherit;font:inherit;border-radius:7px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ctxm-item:hover:not(:disabled),.ctxm-item.ctxm-active:not(:disabled){background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.08))}
-.ctxm-item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4d6bfe);outline-offset:-1px}
-.ctxm-item:disabled{opacity:.45;cursor:default}
-.ctxm-item .ctxm-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.ctxm-item .ctxm-hint{font-size:11px;color:var(--dsw-alias-label-secondary,rgba(255,255,255,.62))}
-.ctxm-item .ctxm-arrow{color:var(--dsw-alias-label-secondary,rgba(255,255,255,.62));margin-left:auto}
-.ctxm-icon{width:16px;height:16px;flex:none;display:inline-flex;align-items:center;justify-content:center}
-.ctxm-icon svg{width:15px;height:15px;display:block}
-.ctxm-sep{height:1px;margin:4px 8px;background:var(--dsw-alias-border-l1,rgba(255,255,255,.1));flex:none}
-.ctxm-note{padding:4px 10px 3px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,rgba(255,255,255,.62));white-space:normal}
-.ctxm-error{padding:5px 10px 3px;font-size:11px;line-height:16px;color:var(--dsw-alias-state-error-primary,#ff6b6b);white-space:normal;word-break:break-word;max-width:340px}
-.ctxm-toast{position:fixed;transform:translate(-50%,-140%);padding:5px 12px;border-radius:999px;background:var(--dsw-alias-bg-overlay,#1b1b1f);color:var(--dsw-alias-label-primary,#f5f5f7);border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.18));box-shadow:0 8px 24px rgba(0,0,0,.32);font-size:12px;line-height:18px;white-space:nowrap;pointer-events:none}
-`
-
-    const URL_SCHEMES = /^(?:https?:\/\/|mailto:)/i
-
+    // One icon per action family; registered into the official `contextMenu.icon`
+    // slot so contributed rows align with the built-in rows.
     const ICONS = {
-      open: 'M6 3h9v9M15 3 8 10M13 13v5H3V8h5',
-      reveal: 'M2 6h7l2 2h11v10H2z',
+      'copy-relative': 'M4 12h16M12 4l4 4-4 4M12 20l-4-4 4-4',
+      'copy-selection': 'M4 4h16v16H4zM8 9h8M8 13h8M8 17h5',
+      'copy-message': 'M4 4h16v12H7l-3 3z',
       apps: 'M12 3l1.2 4.8L18 9l-4.8 1.2L12 15l-1.2-4.8L6 9l4.8-1.2z',
-      copyPath: 'M8 8h10v12H8zM6 16H4V4h10v2',
-      copyRelative: 'M4 12h16M12 4l4 4-4 4M12 20l-4-4 4-4',
-      copySelection: 'M4 4h16v16H4zM8 9h8M8 13h8M8 17h5',
-      copyMessage: 'M4 4h16v12H7l-3 3z',
-      image: 'M3 5h18v14H3zM3 15l5-5 4 4 3-3 6 6',
-      save: 'M12 3v12M7 10l5 5 5-5M4 21h16',
       link: 'M10 14a5 5 0 0 1 0-7l2-2a5 5 0 0 1 7 7l-2 2M14 10a5 5 0 0 1 0 7l-2 2a5 5 0 0 1-7-7l2-2',
-      folder: 'M2 6h7l2 2h11v10H2z',
-    }
-
-    function detectLanguage(locale) {
-      try {
-        const snapshot = locale !== undefined && locale !== null && typeof locale.getLocale === 'function' ? locale.getLocale() : undefined
-        if (snapshot !== undefined && snapshot !== null) {
-          const direct = typeof snapshot.locale === 'string'
-            ? snapshot.locale
-            : (typeof snapshot.active === 'string'
-              ? snapshot.active
-              : (snapshot.active !== undefined && snapshot.active !== null && typeof snapshot.active === 'object'
-                ? (snapshot.active.id ?? snapshot.active.locale ?? snapshot.active.localeId)
-                : undefined))
-          if (typeof direct === 'string' && direct !== '') {
-            const lower = direct.toLowerCase()
-            if (lower.startsWith('zh')) return 'zh'
-            if (lower.startsWith('en')) return 'en'
-          }
-        }
-      } catch {
-        // fall through to the browser locale
-      }
-      try {
-        if (typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
-          return navigator.language.toLowerCase().startsWith('en') ? 'en' : 'zh'
-        }
-      } catch {
-        // ignore
-      }
-      return 'zh'
     }
 
     // ------------------------------------------------------------------
@@ -192,11 +115,6 @@ window.__ModuleLoader__.load({
       const match = /^(.*?\.[A-Za-z0-9_]+)((?::\d+){1,2})$/.exec(value)
       if (match === null) return { path: value, line: undefined }
       return { path: match[1], line: match[2].slice(1) }
-    }
-
-    function basenameOf(value) {
-      const at = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'))
-      return at === -1 ? value : value.slice(at + 1)
     }
 
     function relativePath(cwd, absolute) {
@@ -438,14 +356,14 @@ window.__ModuleLoader__.load({
         return null
       }
       const block = target !== null && target !== undefined && typeof target.closest === 'function'
-        ? target.closest('p, li, pre, blockquote, td, th, h1, h2, h3, h4, h5, h6')
+        ? target.closest(BLOCK_SELECTOR)
         : null
       if (block === null || block === undefined) return null
       const urls = scanUrls(block.innerText !== undefined ? block.innerText : (block.textContent ?? ''))
       return urls.length === 1 ? { href: urls[0].href, text: urls[0].href } : null
     }
 
-    function buildCandidates(target, x, y, messageEl, hint) {
+    function buildCandidates(target, caret, messageEl, hint) {
       const candidates = []
       const push = (raw, confidence, source) => {
         const trimmed = trimToken(raw)
@@ -459,10 +377,9 @@ window.__ModuleLoader__.load({
         candidates.push({ raw: split.path, line: split.line, confidence, source })
       }
 
-      const caret = caretInfoAt(x, y)
       if (caret !== null) {
         const hit = caret.tokens.find((token) => caret.offset >= token.start - 1 && caret.offset <= token.end + 1)
-        if (hit !== undefined && hit.kind !== 'url' && !/^https?:\/\//iu.test(hit.raw)) {
+        if (hit !== undefined && !/^https?:\/\//iu.test(hit.raw)) {
           const extended = extendAbsoluteToken(caret.text, hit)
           if (extended !== null) push(extended, 'high', 'caret-extended')
           push(hit.raw, hit.absolute ? 'high' : 'low', 'caret')
@@ -472,12 +389,12 @@ window.__ModuleLoader__.load({
 
       let block = null
       if (target !== null && target !== undefined && typeof target.closest === 'function') {
-        block = target.closest('p, li, pre, blockquote, td, th, h1, h2, h3, h4, h5, h6, code, summary, a')
+        block = target.closest(`${BLOCK_SELECTOR}, code, summary, a`)
       }
       if (block === null || block === undefined) block = messageEl
       const blockIsCode = block !== null && block !== undefined && (block.tagName === 'PRE' || block.tagName === 'CODE')
       const blockText = block === null || block === undefined ? '' : String(block.innerText !== undefined ? block.innerText : (block.textContent ?? ''))
-      const blockTokens = scanPaths(blockText).filter((token) => token.kind !== 'url')
+      const blockTokens = scanPaths(blockText)
       if (blockTokens.length === 1) {
         const token = blockTokens[0]
         const extended = extendAbsoluteToken(blockText, token)
@@ -510,256 +427,89 @@ window.__ModuleLoader__.load({
       return candidates.slice(0, 6)
     }
 
-    function backgroundImageUrl(value) {
-      if (typeof value !== 'string' || value === '' || value === 'none') return null
-      const match = /url\(\s*(['"]?)(.*?)\1\s*\)/u.exec(value)
-      if (match === null) return null
-      const url = match[2].trim()
-      return url === '' ? null : url
+    function detectLanguage(locale) {
+      try {
+        const snapshot = locale !== undefined && locale !== null && typeof locale.getLocale === 'function' ? locale.getLocale() : undefined
+        if (snapshot !== undefined && snapshot !== null) {
+          const direct = typeof snapshot.locale === 'string'
+            ? snapshot.locale
+            : (typeof snapshot.active === 'string'
+              ? snapshot.active
+              : (snapshot.active !== undefined && snapshot.active !== null && typeof snapshot.active === 'object'
+                ? (snapshot.active.id ?? snapshot.active.locale ?? snapshot.active.localeId)
+                : undefined))
+          if (typeof direct === 'string' && direct !== '') {
+            const lower = direct.toLowerCase()
+            if (lower.startsWith('zh')) return 'zh'
+            if (lower.startsWith('en')) return 'en'
+          }
+        }
+      } catch {
+        // fall through to the browser locale
+      }
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
+          return navigator.language.toLowerCase().startsWith('en') ? 'en' : 'zh'
+        }
+      } catch {
+        // ignore
+      }
+      return 'zh'
     }
+
+    // ------------------------------------------------------------------
+    // Session and path plumbing
+    // ------------------------------------------------------------------
 
     /**
-     * Resolve the image under the pointer. Covers the rendered message image,
-     * the frame button's padding, a canvas frontend, a single-image lightbox
-     * dialog and CSS background-image thumbnails.
+     * The main-view Session is the one the conversation renders. The official
+     * list snapshot already carries local retain counts, so no extra
+     * subscription is created; `useSessions` is not available outside render.
      */
-    function resolveImageTarget(target, allowBackground) {
-      if (target === null || target === undefined || typeof target.closest !== 'function') return null
-      const describeImage = (img) => {
-        const src = typeof img.currentSrc === 'string' && img.currentSrc !== '' ? img.currentSrc : (typeof img.src === 'string' ? img.src : '')
-        if (src === '') return null
-        return {
-          element: img,
-          kind: 'img',
-          src,
-          alt: typeof img.getAttribute === 'function' ? (img.getAttribute('alt') ?? '') : '',
-          width: img.naturalWidth || 0,
-          height: img.naturalHeight || 0,
-        }
-      }
-      const img = target.tagName === 'IMG' ? target : target.closest('img')
-      if (img !== null && img !== undefined) {
-        const described = describeImage(img)
-        if (described !== null) return described
-      }
-      const canvas = target.tagName === 'CANVAS' ? target : target.closest('canvas')
-      if (canvas !== null && canvas !== undefined) {
-        return { element: canvas, kind: 'canvas', src: '', alt: '', width: canvas.width, height: canvas.height }
-      }
-      // The click target may be the frame button's padding around the image.
-      const frame = target.closest('button')
-      if (frame !== null && frame !== undefined) {
-        const inside = frame.querySelector('img')
-        if (inside !== null) return resolveImageTarget(inside, allowBackground)
-      }
-      // A single-image preview dialog (lightbox) renders through a portal.
-      const dialog = target.closest('[role="dialog"], [aria-modal="true"]')
-      if (dialog !== null && dialog !== undefined) {
-        const images = dialog.querySelectorAll('img')
-        if (images.length === 1) return resolveImageTarget(images[0], allowBackground)
-      }
-      // CSS background images are only content inside the conversation or a
-      // dialog; a page skin may paint decorative imagery on the frame itself.
-      if (allowBackground !== true) return null
-      let node = target
-      for (let depth = 0; depth < 3 && node !== null && node !== undefined && node.nodeType === 1; depth += 1) {
-        let computed = ''
-        try {
-          computed = window.getComputedStyle(node).backgroundImage || ''
-        } catch {
-          computed = ''
-        }
-        const url = backgroundImageUrl(computed)
-        if (url !== null) {
-          return { element: node, kind: 'background', src: url, alt: '', width: 0, height: 0 }
-        }
-        node = node.parentElement
-      }
-      return null
-    }
-
-    const IMAGE_EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp', 'image/avif': 'avif' }
-
-    function imageBaseName(target) {
-      const alt = typeof target.alt === 'string' ? target.alt.trim() : ''
-      let stem = alt
-      if (stem === '' && typeof target.src === 'string' && target.src !== '') {
-        try {
-          const parsed = new URL(target.src, window.location.href)
-          const last = parsed.pathname.split('/').filter(Boolean).pop() ?? ''
-          stem = decodeURIComponent(last).replace(/\.[A-Za-z0-9]{1,6}$/u, '')
-        } catch {
-          stem = ''
-        }
-      }
-      return (stem === '' ? `image-${Date.now()}` : stem).replace(/[\\/:*?"<>|]+/gu, '_').slice(0, 120)
-    }
-
-    function imageFileName(target, mimeType) {
-      const extension = IMAGE_EXTENSIONS[mimeType] ?? 'png'
-      return `${imageBaseName(target)}.${extension}`
-    }
-
-    function drawToPngBlob(canvas, source, width, height) {
-      canvas.width = Math.max(1, Math.round(width))
-      canvas.height = Math.max(1, Math.round(height))
-      const context = canvas.getContext('2d')
-      if (context === null) throw new Error('canvas-unavailable')
-      context.drawImage(source, 0, 0, canvas.width, canvas.height)
-      return new Promise((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (blob === null) reject(new Error('encode-failed'))
-          else resolve(blob)
-        }, 'image/png')
-      })
-    }
-
-    async function fetchImageBitmap(src) {
-      if (typeof createImageBitmap !== 'function') throw new Error('bitmap-unavailable')
-      const response = await fetch(src, { credentials: 'include' })
-      if (response.ok !== true) throw new Error(`image-fetch-${response.status}`)
-      const blob = await response.blob()
-      const bitmap = await createImageBitmap(blob)
-      return bitmap
-    }
-
-    /** Render any supported image target to a PNG blob the clipboard accepts. */
-    async function imageToPngBlob(target) {
-      const canvas = document.createElement('canvas')
-      if (target.kind === 'img') {
-        const element = target.element
-        if (element.complete === true && element.naturalWidth > 0) {
-          try {
-            return await drawToPngBlob(canvas, element, element.naturalWidth, element.naturalHeight)
-          } catch {
-            // A canvas-tainted image is retried through fetch/createImageBitmap.
-          }
-        }
-        if (target.src === '') throw new Error('image-not-ready')
-        const bitmap = await fetchImageBitmap(target.src)
-        try {
-          return await drawToPngBlob(canvas, bitmap, bitmap.width, bitmap.height)
-        } finally {
-          if (typeof bitmap.close === 'function') bitmap.close()
-        }
-      }
-      if (target.kind === 'canvas') return drawToPngBlob(canvas, target.element, target.element.width, target.element.height)
-      if (target.kind === 'background' && target.src !== '') {
-        const bitmap = await fetchImageBitmap(target.src)
-        try {
-          return await drawToPngBlob(canvas, bitmap, bitmap.width, bitmap.height)
-        } finally {
-          if (typeof bitmap.close === 'function') bitmap.close()
-        }
-      }
-      throw new Error('image-unsupported')
-    }
-
-    /** Raw bytes for "save as", preserving the original format when possible. */
-    async function imageRawBlob(target) {
-      if (target.kind === 'img' && typeof target.src === 'string' && target.src !== '' && !target.src.startsWith('blob:')) {
-        try {
-          const response = await fetch(target.src, { credentials: 'include' })
-          if (response.ok === true) {
-            const blob = await response.blob()
-            if (typeof blob.type === 'string' && blob.type.startsWith('image/')) return blob
-          }
-        } catch {
-          // fall through to the canvas conversion
-        }
-      }
-      if (target.kind === 'background' && target.src !== '') {
-        try {
-          const response = await fetch(target.src, { credentials: 'include' })
-          if (response.ok === true) {
-            const blob = await response.blob()
-            if (typeof blob.type === 'string' && blob.type.startsWith('image/')) return blob
-          }
-        } catch {
-          // fall through to the canvas conversion
-        }
-      }
-      const png = await imageToPngBlob(target)
-      return png
-    }
-
-    async function copyImageTarget(target) {
-      const png = await imageToPngBlob(target)
-      if (typeof ClipboardItem !== 'function' || navigator.clipboard === undefined || typeof navigator.clipboard.write !== 'function') {
-        return { ok: false, reason: 'clipboard-image-unsupported' }
-      }
+    function currentSessionId(sessions) {
       try {
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
-        return { ok: true }
-      } catch (error) {
-        return { ok: false, reason: 'clipboard-write-failed', message: String(error) }
-      }
-    }
-
-    /** Everything the menu needs, computed synchronously before preventing default. */
-    function prepareMenu(x, y, target, messageEl) {
-      const selectionText = readSelectionWithin(messageEl)
-      const messageText = extractMessageText(messageEl)
-      const link = detectLink(target)
-      const hint = detectElementHint(target)
-      const candidates = buildCandidates(target, x, y, messageEl, hint)
-      const urlHit = link !== null ? link : detectTextUrl(target, caretInfoAt(x, y))
-      return { x, y, selectionText, messageText, link: urlHit, candidates }
-    }
-
-    async function copyToClipboard(root, text) {
-      try {
-        if (typeof navigator !== 'undefined' && navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === 'function') {
-          await navigator.clipboard.writeText(text)
-          return true
+        if (sessions === undefined || sessions === null) return undefined
+        const snapshot = typeof sessions.list?.getSnapshot === 'function' ? sessions.list.getSnapshot() : undefined
+        if (snapshot === undefined || snapshot === null) return undefined
+        if (typeof snapshot.current === 'string') return snapshot.current
+        if (!Array.isArray(snapshot.ids)) return undefined
+        for (const id of snapshot.ids) {
+          const row = snapshot.byId !== undefined && snapshot.byId !== null ? snapshot.byId[id] : undefined
+          if (row === undefined || row === null) continue
+          const retained = row.retainedBy !== undefined && row.retainedBy !== null ? row.retainedBy.mainView : undefined
+          if (typeof retained === 'number' && retained > 0) return id
         }
+        return undefined
       } catch {
-        // fall through to the selection based fallback
+        return undefined
       }
+    }
+
+    function sessionCwd(sessions, sessionId) {
       try {
-        const area = document.createElement('textarea')
-        area.value = text
-        area.setAttribute('readonly', '')
-        area.style.position = 'fixed'
-        area.style.top = '-1000px'
-        area.style.opacity = '0'
-        const host = root !== null && root !== undefined ? root : document.body
-        host.appendChild(area)
-        area.select()
-        const ok = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
-        host.removeChild(area)
-        return ok
+        const snapshot = sessions?.list?.getSnapshot?.()
+        const row = snapshot !== undefined && snapshot !== null && snapshot.byId !== undefined ? snapshot.byId[sessionId] : undefined
+        return row !== undefined && row !== null && typeof row.cwd === 'string' && row.cwd !== '' ? row.cwd : undefined
       } catch {
-        return false
+        return undefined
       }
     }
 
-    async function rpc(action, args) {
-      const controller = typeof AbortController === 'function' ? new AbortController() : null
-      const timer = controller === null ? null : setTimeout(() => controller.abort(), 6000)
-      try {
-        const response = await fetch(RPC_ENDPOINT, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ action, args: args === undefined ? {} : args }),
-          credentials: 'same-origin',
-          signal: controller === null ? undefined : controller.signal,
-        })
-        const text = await response.text()
-        if (!response.ok) return { ok: false, error: `HTTP ${response.status}`, body: text.slice(0, 200) }
-        if (text === '') return { ok: false, error: 'empty-response' }
-        return JSON.parse(text)
-      } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) }
-      } finally {
-        if (timer !== null) clearTimeout(timer)
-      }
+    /** Join a workspace-relative path the way the official `resolveWorkspacePath` does. */
+    function absolutePathOf(cwd, raw) {
+      if (typeof raw !== 'string' || raw === '') return raw
+      if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('/')) return raw
+      if (typeof cwd !== 'string' || cwd === '') return raw
+      const windows = /^[A-Za-z]:[\\/]/.test(cwd) || cwd.includes('\\')
+      const separator = windows ? '\\' : '/'
+      const base = cwd.replace(/[\\/]+$/, '')
+      const tail = raw.replace(/^(?:\.{1,2}[\\/])+/, '')
+      return `${base}${separator}${tail}`
     }
 
-    function icon(name) {
-      return h('span', { className: 'ctxm-icon', 'aria-hidden': true },
-        h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' },
-          h('path', { d: ICONS[name] || ICONS.open })))
+    function errorMessage(error) {
+      if (error instanceof Error) return error.message
+      return typeof error === 'string' ? error : String(error)
     }
 
     const ERROR_KEYS = {
@@ -782,620 +532,70 @@ window.__ModuleLoader__.load({
       return fallback
     }
 
-    /**
-     * The Session snapshot may expose the active id as `current`, or only as
-     * `ids`/`byId` with a retained-by-mainView flag. Support both shapes.
-     */
-    function currentSessionId(snapshot) {
-      if (snapshot === undefined || snapshot === null) return undefined
-      if (typeof snapshot.current === 'string') return snapshot.current
-      if (!Array.isArray(snapshot.ids)) return undefined
-      for (const id of snapshot.ids) {
-        const row = snapshot.byId !== undefined && snapshot.byId !== null ? snapshot.byId[id] : undefined
-        if (row === undefined || row === null) continue
-        const retained = row.retainedBy !== undefined && row.retainedBy !== null ? row.retainedBy.mainView : undefined
-        if (typeof retained === 'number' && retained > 0) return id
+    async function rpc(action, args, signal) {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      const timer = controller === null ? null : setTimeout(() => controller.abort(), RPC_TIMEOUT_MS)
+      const abort = () => {
+        if (controller !== null) controller.abort()
       }
-      return snapshot.ids.length > 0 ? snapshot.ids[0] : undefined
+      if (signal !== undefined && signal !== null) {
+        if (signal.aborted === true) {
+          if (timer !== null) clearTimeout(timer)
+          return { ok: false, error: 'aborted' }
+        }
+        signal.addEventListener('abort', abort, { once: true })
+      }
+      try {
+        const response = await fetch(RPC_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action, args: args === undefined ? {} : args }),
+          credentials: 'same-origin',
+          signal: controller === null ? undefined : controller.signal,
+        })
+        const text = await response.text()
+        if (!response.ok) return { ok: false, error: `HTTP ${response.status}`, body: text.slice(0, 200) }
+        if (text === '') return { ok: false, error: 'empty-response' }
+        return JSON.parse(text)
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) }
+      } finally {
+        if (timer !== null) clearTimeout(timer)
+        if (signal !== undefined && signal !== null) signal.removeEventListener('abort', abort)
+      }
     }
 
-    // ------------------------------------------------------------------
-    // Menu component
-    // ------------------------------------------------------------------
-
-    function MenuHost(props) {
-      const t = typeof props.__ctxmenuTranslate === 'function' ? props.__ctxmenuTranslate : (key) => key
-      const useSessions = typeof props.useSessions === 'function' ? props.useSessions : undefined
-
-      const sessionId = useSessions === undefined ? undefined : useSessions((snapshot) => currentSessionId(snapshot))
-      const cwd = useSessions === undefined
-        ? undefined
-        : useSessions((snapshot) => {
-          const id = currentSessionId(snapshot)
-          if (id === undefined) return undefined
-          const row = snapshot.byId !== undefined && snapshot.byId !== null ? snapshot.byId[id] : undefined
-          return row !== undefined && row !== null && typeof row.cwd === 'string' && row.cwd !== '' ? row.cwd : undefined
-        })
-
-      const rootRef = React.useRef(null)
-      const menuRef = React.useRef(null)
-      const subRef = React.useRef(null)
-      const statusRef = React.useRef(null)
-      const tokenRef = React.useRef(0)
-      const entriesRef = React.useRef([])
-      const toastTimerRef = React.useRef(null)
-
-      const [menu, setMenu] = React.useState(null)
-      const [pos, setPos] = React.useState(null)
-      const [submenu, setSubmenu] = React.useState(null)
-      const [error, setError] = React.useState(null)
-      const [busy, setBusy] = React.useState(false)
-      const [toast, setToast] = React.useState(null)
-      const [activeIndex, setActiveIndex] = React.useState(0)
-      const themeMode = props.__ctxmenuTheme === 'light' ? 'light' : 'dark'
-
-      React.useEffect(() => {
-        rpc('status', {}).then((reply) => {
-          if (reply !== undefined && reply !== null && reply.ok === true) statusRef.current = reply
-        }).catch(() => {})
-      }, [])
-
-      const closeAll = React.useCallback(() => {
-        tokenRef.current += 1
-        setMenu(null)
-        setSubmenu(null)
-        setError(null)
-        setBusy(false)
-        setActiveIndex(0)
-      }, [])
-
-      const showToast = React.useCallback((text, x, y) => {
-        setToast({ text, x, y })
-        if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current)
-        toastTimerRef.current = setTimeout(() => setToast(null), 1500)
-      }, [])
-
-      React.useEffect(() => () => {
-        if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current)
-      }, [])
-
-      const resolveFile = React.useCallback(async (candidates, token) => {
-        if (candidates.length === 0) return
-        const reply = await rpc('resolve', { paths: candidates.map((entry) => entry.raw), cwd, sessionId })
-        if (tokenRef.current !== token) return
-        if (reply === undefined || reply === null || reply.ok !== true || !Array.isArray(reply.results)) {
-          setMenu((current) => (current === null || current.token !== token ? current : { ...current, resolving: false }))
-          return
-        }
-        let found = null
-        let highMissing = null
-        for (let index = 0; index < candidates.length; index += 1) {
-          const info = reply.results[index]
-          if (info === undefined || info === null || info.error !== undefined) continue
-          if (info.exists === true) {
-            found = { raw: candidates[index].raw, line: candidates[index].line, confidence: candidates[index].confidence, absolute: info.absolute, exists: true, isDir: info.isDir === true }
-            break
-          }
-          if (highMissing === null && candidates[index].confidence === 'high') {
-            highMissing = { raw: candidates[index].raw, line: candidates[index].line, confidence: 'high', absolute: info.absolute, exists: false, isDir: false }
-          }
-        }
-        const resolved = found !== null ? found : highMissing
-        if (tokenRef.current !== token) return
-        setMenu((current) => (current === null || current.token !== token ? current : { ...current, file: resolved, resolving: false }))
-      }, [cwd, sessionId])
-
-      const openMenu = React.useCallback((prepared) => {
-        const token = tokenRef.current + 1
-        tokenRef.current = token
-        setPos(null)
-        setSubmenu(null)
-        setError(null)
-        setBusy(false)
-        setActiveIndex(0)
-        setMenu({
-          token,
-          x: prepared.x,
-          y: prepared.y,
-          messageText: prepared.messageText ?? '',
-          selectionText: prepared.selectionText ?? '',
-          link: prepared.link ?? null,
-          image: prepared.image ?? null,
-          file: null,
-          resolving: Array.isArray(prepared.candidates) && prepared.candidates.length > 0,
-        })
-        if (Array.isArray(prepared.candidates) && prepared.candidates.length > 0) resolveFile(prepared.candidates, token).catch(() => {})
-      }, [resolveFile])
-
-      React.useEffect(() => {
-        const onContextMenu = (event) => {
-          const raw = event.target
-          const target = raw instanceof Element ? raw : (raw !== null && raw !== undefined && raw.parentElement instanceof Element ? raw.parentElement : null)
-          if (target === null) return
-          if (target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]') !== null) return
-          // Images are copied in place, including inside the preview lightbox.
-          let image = null
-          try {
-            const contentScope = target.closest('[data-chat-flow-kind], [role="dialog"], [aria-modal="true"]') !== null
-            image = resolveImageTarget(target, contentScope)
-          } catch {
-            image = null
-          }
-          if (image !== null) {
-            event.preventDefault()
-            event.stopPropagation()
-            openMenu({ x: event.clientX, y: event.clientY, image, candidates: [] })
-            return
-          }
-          const messageEl = target.closest('[data-chat-flow-kind]')
-          if (messageEl === null) return
-          let prepared
-          try {
-            prepared = prepareMenu(event.clientX, event.clientY, target, messageEl)
-          } catch {
-            return
-          }
-          const actionable = prepared.selectionText !== '' || prepared.messageText !== '' || prepared.link !== null || prepared.candidates.length > 0
-          if (!actionable) return
-          event.preventDefault()
-          event.stopPropagation()
-          openMenu(prepared)
-        }
-        document.addEventListener('contextmenu', onContextMenu, true)
-        return () => document.removeEventListener('contextmenu', onContextMenu, true)
-      }, [openMenu])
-
-      // Close on outside interaction, scroll, resize, blur; Escape and arrows.
-      React.useEffect(() => {
-        if (menu === null) return undefined
-        const onPointerDown = (event) => {
-          const menuEl = menuRef.current
-          const subEl = subRef.current
-          const inMenu = menuEl !== null && menuEl.contains(event.target)
-          const inSub = subEl !== null && subEl.contains(event.target)
-          if (!inMenu && !inSub) closeAll()
-        }
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            if (submenu !== null) setSubmenu(null)
-            else closeAll()
-            return
-          }
-          const list = entriesRef.current
-          if (list.length === 0) return
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault()
-            const currentEntry = list[activeIndex]
-            const from = currentEntry === undefined ? (event.key === 'ArrowDown' ? -1 : 0) : list.indexOf(currentEntry)
-            let next = from
-            for (let step = 0; step < list.length; step += 1) {
-              next = event.key === 'ArrowDown' ? (next + 1) % list.length : (next - 1 + list.length) % list.length
-              if (list[next] !== undefined && list[next].disabled !== true) break
-            }
-            setActiveIndex(next)
-            return
-          }
-          if (event.key === 'Enter') {
-            const entry = list[activeIndex]
-            if (entry !== undefined && entry !== null && entry.disabled !== true && typeof entry.run === 'function') {
-              event.preventDefault()
-              entry.run()
-            }
-            return
-          }
-          if (event.key === 'ArrowRight' && list[activeIndex] !== undefined && list[activeIndex].onHover !== undefined) {
-            event.preventDefault()
-            list[activeIndex].onHover({ currentTarget: menuRef.current })
-          }
-        }
-        const onScroll = () => closeAll()
-        document.addEventListener('pointerdown', onPointerDown, true)
-        document.addEventListener('keydown', onKeyDown, true)
-        window.addEventListener('scroll', onScroll, true)
-        window.addEventListener('resize', onScroll)
-        window.addEventListener('blur', onScroll)
-        return () => {
-          document.removeEventListener('pointerdown', onPointerDown, true)
-          document.removeEventListener('keydown', onKeyDown, true)
-          window.removeEventListener('scroll', onScroll, true)
-          window.removeEventListener('resize', onScroll)
-          window.removeEventListener('blur', onScroll)
-        }
-      }, [menu, submenu, activeIndex, closeAll])
-
-      // Clamp the menu inside the viewport once its size is known.
-      React.useLayoutEffect(() => {
-        if (menu === null) return
-        const element = menuRef.current
-        if (element === null) return
-        const width = element.offsetWidth
-        const height = element.offsetHeight
-        const left = Math.max(8, Math.min(menu.x, window.innerWidth - width - 8))
-        const top = Math.max(8, Math.min(menu.y, window.innerHeight - height - 8))
-        setPos((current) => (current !== null && current.left === left && current.top === top ? current : { left, top }))
-      }, [menu, submenu, error])
-
-      React.useLayoutEffect(() => {
-        if (submenu === null) return
-        const element = subRef.current
-        if (element === null) return
-        const width = element.offsetWidth
-        const height = element.offsetHeight
-        const left = submenu.x + width > window.innerWidth - 8 ? Math.max(8, submenu.x - width - 300) : submenu.x
-        const top = Math.max(8, Math.min(submenu.y, window.innerHeight - height - 8))
-        if (left !== submenu.x || top !== submenu.y) setSubmenu((current) => (current === null ? current : { ...current, x: left, y: top }))
-      }, [submenu])
-
-      const toastNode = toast === null ? null : h('div', { key: 'toast', className: 'ctxm-toast', style: { left: toast.x, top: toast.y } }, toast.text)
-
-      if (menu === null) {
-        return h('div', { ref: rootRef, className: 'ctxm-root', style: { display: 'contents' } },
-          h('style', { key: 'css' }, MENU_CSS),
-          toastNode)
-      }
-
-      const file = menu.file
-      const link = menu.link
-      const image = menu.image
-      const canOpen = statusRef.current === null || statusRef.current === undefined ? true : statusRef.current.canOpen !== false
-      const relative = file === null ? '' : relativePath(cwd, file.absolute)
-      const outsideWorkspace = file !== null && relative === ''
-      const fileOpenable = file !== null && file.exists === true && canOpen
-      const items = []
-      const current = menu
-
-      const guardToken = (token) => tokenRef.current === token
-
-      const closeThenToast = (text) => {
-        const x = current.x
-        const y = current.y
-        closeAll()
-        showToast(text, x, y)
-      }
-
-      const runCopy = async (text) => {
-        const ok = await copyToClipboard(rootRef.current, text)
-        if (ok) closeThenToast(t('copied'))
-        else setError(t('copyFailed'))
-      }
-
-      const imageLinkable = image !== null && typeof image.src === 'string' && image.src !== '' && !image.src.startsWith('blob:')
-
-      const runCopyImage = async () => {
-        if (image === null) return
-        const token = tokenRef.current
-        setBusy(true)
-        setError(null)
-        try {
-          const result = await copyImageTarget(image)
-          if (!guardToken(token)) return
-          if (result.ok === true) {
-            setBusy(false)
-            closeThenToast(t('imageCopied'))
-            return
-          }
-          // Some environments refuse image clipboard items; a link is still useful.
-          if (imageLinkable) {
-            const copied = await copyToClipboard(rootRef.current, image.src)
-            if (!guardToken(token)) return
-            if (copied === true) {
-              setBusy(false)
-              closeThenToast(t('imageCopiedAsLink'))
-              return
-            }
-          }
-          setBusy(false)
-          setError(t('copyImageFailed'))
-        } catch {
-          if (!guardToken(token)) return
-          setBusy(false)
-          setError(t('copyImageFailed'))
+    /** First candidate the Host confirmed exists; everything else is ignored. */
+    function pickExisting(reply, candidates) {
+      if (reply === undefined || reply === null || reply.ok !== true || !Array.isArray(reply.results)) return null
+      for (let index = 0; index < candidates.length; index += 1) {
+        const info = reply.results[index]
+        if (info === undefined || info === null || info.error !== undefined) continue
+        if (info.exists === true) {
+          return { raw: candidates[index].raw, line: candidates[index].line, absolute: info.absolute, isDir: info.isDir === true }
         }
       }
-
-      const runSaveImage = async () => {
-        if (image === null) return
-        const token = tokenRef.current
-        setBusy(true)
-        setError(null)
-        try {
-          const blob = await imageRawBlob(image)
-          if (!guardToken(token)) return
-          const objectUrl = URL.createObjectURL(blob)
-          const anchor = document.createElement('a')
-          anchor.href = objectUrl
-          anchor.download = imageFileName(image, blob.type)
-          anchor.rel = 'noopener'
-          const host = rootRef.current !== null ? rootRef.current : document.body
-          host.appendChild(anchor)
-          anchor.click()
-          host.removeChild(anchor)
-          setTimeout(() => URL.revokeObjectURL(objectUrl), 4000)
-          setBusy(false)
-          closeThenToast(t('saveStarted'))
-        } catch {
-          if (!guardToken(token)) return
-          setBusy(false)
-          setError(t('saveImageFailed'))
-        }
-      }
-
-      const runFileAction = async (mode) => {
-        if (file === null) return
-        const token = tokenRef.current
-        setBusy(true)
-        setError(null)
-        const reply = await rpc(mode === 'reveal' ? 'reveal' : 'open', { path: file.absolute, cwd, sessionId })
-        if (!guardToken(token)) return
-        setBusy(false)
-        if (reply !== undefined && reply !== null && reply.ok === true) {
-          closeAll()
-          return
-        }
-        setError(describeError(reply, t('openFailed'), t))
-      }
-
-      const openWith = async (application) => {
-        if (file === null) return
-        const token = tokenRef.current
-        setBusy(true)
-        setError(null)
-        const reply = await rpc('openWith', { path: file.absolute, cwd, sessionId, application })
-        if (!guardToken(token)) return
-        setBusy(false)
-        if (reply !== undefined && reply !== null && reply.ok === true) closeAll()
-        else setError(describeError(reply, t('openFailed'), t))
-      }
-
-      const openWithDialog = async () => {
-        if (file === null) return
-        const token = tokenRef.current
-        setBusy(true)
-        setError(null)
-        const reply = await rpc('openWithDialog', { path: file.absolute, cwd, sessionId })
-        if (!guardToken(token)) return
-        setBusy(false)
-        if (reply !== undefined && reply !== null && reply.ok === true) closeAll()
-        else setError(describeError(reply, t('openFailed'), t))
-      }
-
-      const loadApps = async (event) => {
-        if (file === null) return
-        const token = tokenRef.current
-        const rect = event !== null && event !== undefined && event.currentTarget !== null && event.currentTarget !== undefined
-          ? event.currentTarget.getBoundingClientRect()
-          : { right: current.x + 200, top: current.y }
-        setSubmenu({ x: rect.right + 4, y: rect.top, loading: true, items: [], canDialog: false })
-        const reply = await rpc('apps', { path: file.absolute, cwd, sessionId })
-        if (!guardToken(token)) return
-        const apps = reply !== undefined && reply !== null && reply.ok === true && Array.isArray(reply.apps) ? reply.apps : []
-        setSubmenu({
-          x: rect.right + 4,
-          y: rect.top,
-          loading: false,
-          items: apps.filter((entry) => entry !== null && typeof entry.id === 'string' && typeof entry.name === 'string'),
-          canDialog: reply !== undefined && reply !== null && reply.canOpenWithDialog === true,
-        })
-      }
-
-      const openLink = async () => {
-        if (link === null) return
-        const token = tokenRef.current
-        setBusy(true)
-        setError(null)
-        const reply = await rpc('openUrl', { url: link.href })
-        if (!guardToken(token)) return
-        setBusy(false)
-        if (reply !== undefined && reply !== null && reply.ok === true) {
-          closeAll()
-          return
-        }
-        try {
-          window.open(link.href, '_blank', 'noopener,noreferrer')
-          closeAll()
-        } catch {
-          setError(describeError(reply, t('openFailed'), t))
-        }
-      }
-
-      const pushItem = (entry) => {
-        if (entry === null) {
-          items.push({ separator: true })
-          return
-        }
-        items.push(entry)
-      }
-
-      if (image !== null) {
-        pushItem({ id: 'copyImage', icon: 'image', label: t('copyImage'), disabled: busy, run: runCopyImage })
-        if (imageLinkable) {
-          pushItem({ id: 'copyImageLink', icon: 'copyPath', label: t('copyImageLink'), disabled: busy, run: () => runCopy(image.src) })
-        }
-        pushItem({ id: 'saveImage', icon: 'save', label: t('saveImage'), disabled: busy, run: runSaveImage })
-      } else if (file !== null) {
-        pushItem({
-          id: 'open',
-          icon: file.isDir ? 'folder' : 'open',
-          label: file.isDir ? `${t('open')} (${t('folder')})` : t('open'),
-          disabled: !fileOpenable || busy,
-          run: () => runFileAction('open'),
-        })
-        pushItem({
-          id: 'reveal',
-          icon: 'reveal',
-          label: t('reveal'),
-          disabled: !fileOpenable || busy,
-          run: () => runFileAction('reveal'),
-        })
-        pushItem({
-          id: 'apps',
-          icon: 'apps',
-          label: t('openWith'),
-          submenu: true,
-          disabled: !fileOpenable || busy,
-          run: () => {},
-          onHover: loadApps,
-        })
-        if (file.exists !== true) pushItem({ id: 'note-missing', note: t('missing') })
-        else if (!canOpen) pushItem({ id: 'note-unsupported', note: t('unsupported') })
-        if (file.absolute !== undefined) {
-          pushItem({ separator: true })
-          pushItem({ id: 'copyPath', icon: 'copyPath', label: t('copyPath'), disabled: busy, run: () => runCopy(file.absolute) })
-          pushItem({
-            id: 'copyRelative',
-            icon: 'copyRelative',
-            label: t('copyRelative'),
-            hint: outsideWorkspace ? t('outside') : relative,
-            disabled: busy || outsideWorkspace || relative === '',
-            run: () => runCopy(relative),
-          })
-        }
-        pushItem({ separator: true })
-      } else if (menu.resolving) {
-        pushItem({ id: 'resolving', note: t('resolving') })
-        pushItem({ separator: true })
-      }
-
-      if (menu.selectionText !== '') {
-        pushItem({ id: 'copySelection', icon: 'copySelection', label: t('copySelection'), disabled: busy, run: () => runCopy(menu.selectionText) })
-      }
-      if (menu.messageText !== '') {
-        pushItem({ id: 'copyMessage', icon: 'copyMessage', label: t('copyMessage'), disabled: busy, run: () => runCopy(menu.messageText) })
-      }
-      if (link !== null) {
-        pushItem({ separator: true })
-        pushItem({ id: 'openLink', icon: 'link', label: t('openLink'), disabled: busy, run: openLink })
-        pushItem({ id: 'copyLink', icon: 'copyPath', label: t('copyLink'), disabled: busy, run: () => runCopy(link.href) })
-      }
-
-      entriesRef.current = items.filter((entry) => entry !== null && entry.separator !== true && entry.note === undefined)
-      const entries = entriesRef.current
-      const activeEntry = entries[activeIndex]
-
-      const headerTitle = image !== null
-        ? (typeof image.alt === 'string' && image.alt.trim() !== '' ? image.alt.trim() : t('imageLabel'))
-        : (file !== null
-          ? basenameOf(file.raw)
-          : (link !== null ? link.href.replace(/^https?:\/\//iu, '').split('/')[0] : t('titleText')))
-      const headerSub = image !== null
-        ? `${image.width > 0 ? `${image.width}×${image.height} · ` : ''}${String(image.src ?? '').slice(0, 160)}`
-        : (file !== null
-          ? `${file.absolute ?? file.raw}${file.line !== undefined && file.line !== '' ? `:${file.line}` : ''}${file.isDir ? ` (${t('folderTag')})` : ''}`
-          : (link !== null ? link.href : (menu.selectionText !== '' ? menu.selectionText : menu.messageText).slice(0, 120)))
-
-      const renderItem = (entry, index) => {
-        if (entry === null) return null
-        if (entry.separator === true) return h('div', { key: `sep-${index}`, className: 'ctxm-sep', role: 'separator' })
-        if (entry.note !== undefined) return h('div', { key: entry.id ?? `note-${index}`, className: 'ctxm-note' }, entry.note)
-        const isActive = entry === activeEntry
-        return h('button', {
-          key: entry.id,
-          type: 'button',
-          role: 'menuitem',
-          className: `ctxm-item${isActive ? ' ctxm-active' : ''}`,
-          disabled: entry.disabled === true,
-          onMouseEnter: (event) => {
-            const position = entries.indexOf(entry)
-            if (position !== -1) setActiveIndex(position)
-            if (entry.onHover !== undefined) entry.onHover(event)
-            else if (submenu !== null) setSubmenu(null)
-          },
-          onClick: (event) => {
-            if (entry.onHover !== undefined) {
-              entry.onHover(event)
-              return
-            }
-            entry.run()
-          },
-        },
-        icon(entry.icon),
-        h('span', { className: 'ctxm-label' }, entry.label),
-        entry.hint !== undefined && entry.hint !== '' ? h('span', { className: 'ctxm-hint' }, entry.hint) : null,
-        entry.submenu === true ? h('span', { className: 'ctxm-arrow' }, '\u203A') : null)
-      }
-
-      const menuNode = h('div', {
-        key: 'menu',
-        ref: menuRef,
-        className: 'ctxm-menu',
-        role: 'menu',
-        tabIndex: -1,
-        'data-ctxm-theme': themeMode,
-        style: pos === null ? { left: menu.x, top: menu.y } : { left: pos.left, top: pos.top },
-        onContextMenu: (event) => {
-          event.preventDefault()
-          event.stopPropagation()
-        },
-      },
-      h('div', { className: 'ctxm-head' },
-        h('div', { className: 'ctxm-title', title: headerTitle }, headerTitle),
-        headerSub !== '' ? h('div', { className: 'ctxm-sub', title: headerSub }, headerSub) : null),
-      items.map(renderItem),
-      error !== null ? h('div', { className: 'ctxm-error', role: 'alert' }, error) : null)
-
-      const submenuNode = submenu === null ? null : h('div', {
-        key: 'submenu',
-        ref: subRef,
-        className: 'ctxm-menu',
-        role: 'menu',
-        'data-ctxm-theme': themeMode,
-        style: { left: submenu.x, top: submenu.y },
-        onContextMenu: (event) => {
-          event.preventDefault()
-          event.stopPropagation()
-        },
-      },
-      submenu.loading
-        ? h('div', { className: 'ctxm-note' }, t('appsLoading'))
-        : (submenu.items.length === 0
-          ? h('div', { className: 'ctxm-note' }, t('appsEmpty'))
-          : submenu.items.map((entry) => h('button', {
-            key: `app-${entry.id}`,
-            type: 'button',
-            role: 'menuitem',
-            className: 'ctxm-item',
-            disabled: busy,
-            onClick: () => openWith(entry.id),
-          }, icon('apps'), h('span', { className: 'ctxm-label' }, entry.name), entry.isDefault === true ? h('span', { className: 'ctxm-hint' }, t('defaultApp')) : null))),
-      submenu.canDialog
-        ? h(React.Fragment, null,
-          h('div', { className: 'ctxm-sep', role: 'separator' }),
-          h('button', {
-            type: 'button',
-            role: 'menuitem',
-            className: 'ctxm-item',
-            disabled: busy,
-            onClick: () => { openWithDialog() },
-          }, icon('apps'), h('span', { className: 'ctxm-label' }, t('chooseApp'))))
-        : null)
-
-      return h('div', { ref: rootRef, className: 'ctxm-root', 'data-ctxm-theme': themeMode },
-        h('style', { key: 'css' }, MENU_CSS),
-        menuNode,
-        submenuNode,
-        toastNode)
+      return null
     }
 
     return {
-      inject: ['slots'],
+      // The official menu service is the whole point of this release: without it
+      // (DSH < 0.2.2) the plugin has nothing to contribute to.
+      inject: ['contextMenus', 'sessions', 'locale', 'slots'],
       apply(ctx) {
+        const contextMenus = ctx.get('contextMenus')
+        if (contextMenus === undefined || contextMenus === null || typeof contextMenus.register !== 'function') {
+          ctx.logger?.warn?.('[chat-ctxmenu] contextMenus service unavailable; official menu integration skipped')
+          return
+        }
+        const sessions = ctx.get('sessions')
         const slots = ctx.get('slots')
-        if (slots === undefined || slots === null) return
         const locale = ctx.get('locale')
+
         const language = detectLanguage(locale)
         const dictionary = STRINGS[language] !== undefined ? STRINGS[language] : STRINGS.zh
-        const translate = (key) => (dictionary[key] !== undefined ? dictionary[key] : (STRINGS.en[key] ?? key))
-        let initialTheme = 'dark'
-        try {
-          const theme = ctx.get('theme')
-          const snapshot = theme !== undefined && theme !== null && typeof theme.getTheme === 'function' ? theme.getTheme() : undefined
-          const active = snapshot !== undefined && snapshot !== null ? snapshot.active : undefined
-          const scheme = active !== undefined && active !== null ? active.colorScheme : undefined
-          if (scheme === 'light') initialTheme = 'light'
-        } catch {
-          // dark is the safe default for an unknown theme
-        }
+        const t = (key) => (dictionary[key] !== undefined ? dictionary[key] : (STRINGS.en[key] ?? key))
+
         if (locale !== undefined && locale !== null && typeof locale.register === 'function') {
           try {
             const dictionaries = {}
@@ -1403,15 +603,285 @@ window.__ModuleLoader__.load({
             const dispose = locale.register('chat-ctxmenu', dictionaries)
             if (typeof dispose === 'function') ctx.effect(() => dispose)
           } catch {
-            // the local dictionary above is the fallback; never break the slot
+            // the local dictionary above is the fallback; never break the menu
           }
         }
-        const Component = (props) => h(MenuHost, { ...props, __ctxmenuTranslate: translate, __ctxmenuTheme: initialTheme })
-        slots.inject('shell.overlay', () => slots.register({
-          name: 'shell.overlay',
-          id: 'chat-ctxmenu',
-          order: 80,
-        }, Component))
+
+        // Icons are optional chrome: register each one into the official keyed
+        // slot so a contributed row looks like a built-in row.
+        if (slots !== undefined && slots !== null && typeof slots.inject === 'function' && typeof slots.register === 'function') {
+          for (const [key, path] of Object.entries(ICONS)) {
+            try {
+              slots.inject('contextMenu.icon', () => slots.register({
+                name: 'contextMenu.icon',
+                key: `chat-ctxmenu.${key}`,
+              }, () => h('svg', {
+                viewBox: '0 0 24 24',
+                width: 15,
+                height: 15,
+                fill: 'none',
+                stroke: 'currentColor',
+                strokeWidth: 1.8,
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+                'aria-hidden': true,
+              }, h('path', { d: path }))))
+            } catch (error) {
+              ctx.logger?.debug?.(`[chat-ctxmenu] icon slot ${key} unavailable: ${errorMessage(error)}`)
+            }
+          }
+        }
+
+        const icon = (key) => ({ key: `chat-ctxmenu.${key}` })
+        const cwdFor = (sessionId) => sessionCwd(sessions, sessionId)
+        const absoluteFor = (sessionId, path) => absolutePathOf(cwdFor(sessionId), path)
+
+        const copyText = async (text) => {
+          try {
+            if (typeof navigator === 'undefined' || navigator === null || navigator.clipboard === undefined || typeof navigator.clipboard.writeText !== 'function') return false
+            await navigator.clipboard.writeText(text)
+            return true
+          } catch {
+            return false
+          }
+        }
+        const notifyCopied = () => {
+          try {
+            if (typeof contextMenus.notify === 'function') contextMenus.notify(t('copied'), true)
+          } catch {
+            // feedback is best-effort; the clipboard write already succeeded
+          }
+        }
+        const copyOrThrow = async (text) => {
+          if (!(await copyText(text))) throw new Error(t('copyFailed'))
+          notifyCopied()
+        }
+
+        const openWithApplication = async (absolute, cwd, sessionId, application) => {
+          const reply = await rpc('openWith', { path: absolute, cwd, sessionId, application })
+          if (reply !== undefined && reply !== null && reply.ok === true) return
+          throw new Error(describeError(reply, t('openFailed'), t))
+        }
+        const openWithDialog = async (absolute, cwd, sessionId) => {
+          const reply = await rpc('openWithDialog', { path: absolute, cwd, sessionId })
+          if (reply !== undefined && reply !== null && reply.ok === true) return
+          throw new Error(describeError(reply, t('openFailed'), t))
+        }
+
+        const register = (contribution) => {
+          try {
+            ctx.effect(() => contextMenus.register(contribution), `chat-ctxmenu: ${contribution.id}`)
+          } catch (error) {
+            ctx.logger?.debug?.(`[chat-ctxmenu] menu contribution ${contribution.id} failed: ${errorMessage(error)}`)
+          }
+        }
+
+        // --- `file`: relative path + open-with submenu (the official rows already
+        //     cover preview, reveal, default app and absolute path). ---
+        register({
+          id: 'chat-ctxmenu.file.copy-relative-path',
+          target: 'file',
+          order: 110,
+          resolve(target) {
+            const cwd = cwdFor(target.sessionId)
+            const relative = relativePath(cwd, absoluteFor(target.sessionId, target.path))
+            if (relative === '' || relative === '.') return []
+            return [{
+              id: 'copyRelativePath',
+              icon: icon('copy-relative'),
+              label: t('copyRelative'),
+              failureLabel: t('copyFailed'),
+              run: () => copyOrThrow(relative),
+            }]
+          },
+        })
+
+        register({
+          id: 'chat-ctxmenu.file.open-with',
+          target: 'file',
+          order: 120,
+          async resolve(target, signal) {
+            const cwd = cwdFor(target.sessionId)
+            const absolute = absoluteFor(target.sessionId, target.path)
+            const reply = await rpc('apps', { path: absolute, cwd, sessionId: target.sessionId }, signal)
+            if (signal.aborted === true) return []
+            if (reply === undefined || reply === null || reply.ok !== true || !Array.isArray(reply.apps)) return []
+            const children = []
+            for (const entry of reply.apps) {
+              if (entry === null || entry === undefined || typeof entry.id !== 'string' || typeof entry.name !== 'string') continue
+              children.push({
+                id: `application:${entry.id}`,
+                label: entry.isDefault === true ? `${entry.name} (${t('defaultApp')})` : entry.name,
+                failureLabel: t('openFailed'),
+                run: () => openWithApplication(absolute, cwd, target.sessionId, entry.id),
+              })
+            }
+            if (reply.canOpenWithDialog === true) {
+              children.push({
+                id: 'application:choose',
+                label: t('chooseApp'),
+                failureLabel: t('openFailed'),
+                run: () => openWithDialog(absolute, cwd, target.sessionId),
+              })
+            }
+            if (children.length === 0) return []
+            return [{ id: 'openWith', icon: icon('apps'), label: t('openWith'), children }]
+          },
+        })
+
+        // --- `directory`: the official rows cover reveal and absolute path. ---
+        register({
+          id: 'chat-ctxmenu.directory.copy-relative-path',
+          target: 'directory',
+          order: 110,
+          resolve(target) {
+            const cwd = cwdFor(target.sessionId)
+            const relative = relativePath(cwd, absoluteFor(target.sessionId, target.path))
+            if (relative === '' || relative === '.') return []
+            return [{
+              id: 'copyRelativePath',
+              icon: icon('copy-relative'),
+              label: t('copyRelative'),
+              failureLabel: t('copyFailed'),
+              run: () => copyOrThrow(relative),
+            }]
+          },
+        })
+
+        // --- `image`: only an http(s) source is a useful thing to copy. ---
+        register({
+          id: 'chat-ctxmenu.image.copy-link',
+          target: 'image',
+          order: 150,
+          resolve(target) {
+            const url = typeof target?.url === 'string' ? target.url : ''
+            if (!/^https?:\/\//iu.test(url)) return []
+            return [{
+              id: 'copyImageLink',
+              icon: icon('link'),
+              label: t('copyImageLink'),
+              failureLabel: t('copyFailed'),
+              run: () => copyOrThrow(url),
+            }]
+          },
+        })
+
+        // --- `chatMessage`: plugin-defined target, only used for plain text. ---
+        register({
+          id: 'chat-ctxmenu.message.copy-selection',
+          target: 'chatMessage',
+          order: 100,
+          resolve(target) {
+            const text = typeof target?.selectionText === 'string' ? target.selectionText : ''
+            if (text === '') return []
+            return [{
+              id: 'copySelection',
+              icon: icon('copy-selection'),
+              label: t('copySelection'),
+              failureLabel: t('copyFailed'),
+              run: () => copyOrThrow(text),
+            }]
+          },
+        })
+
+        register({
+          id: 'chat-ctxmenu.message.copy-message',
+          target: 'chatMessage',
+          order: 110,
+          resolve(target) {
+            const text = typeof target?.messageText === 'string' ? target.messageText : ''
+            if (text === '') return []
+            return [{
+              id: 'copyMessage',
+              icon: icon('copy-message'),
+              label: t('copyMessage'),
+              failureLabel: t('copyFailed'),
+              run: () => copyOrThrow(text),
+            }]
+          },
+        })
+
+        // ------------------------------------------------------------------
+        // Fallback: gestures the official chat surface did not claim.
+        // ------------------------------------------------------------------
+
+        ctx.effect(() => {
+          if (typeof document === 'undefined' || document === null || typeof document.addEventListener !== 'function') return () => {}
+
+          let gesture = 0
+
+          const openTarget = (kind, value, point) => {
+            try {
+              contextMenus.open({ kind, value }, point)
+            } catch (error) {
+              ctx.logger?.debug?.(`[chat-ctxmenu] open ${kind} menu failed: ${errorMessage(error)}`)
+            }
+          }
+
+          const openSharedMenu = async (prepared, token) => {
+            const sessionId = currentSessionId(sessions)
+            const cwd = cwdFor(sessionId)
+            let found = null
+            if (prepared.candidates.length > 0 && sessionId !== undefined) {
+              const reply = await rpc('resolve', { paths: prepared.candidates.map((entry) => entry.raw), cwd, sessionId })
+              if (token !== gesture) return
+              found = pickExisting(reply, prepared.candidates)
+            }
+            if (token !== gesture) return
+            const point = { x: prepared.x, y: prepared.y }
+            if (found !== null && sessionId !== undefined) {
+              openTarget(found.isDir ? 'directory' : 'file', { sessionId, path: found.absolute }, point)
+              return
+            }
+            if (prepared.link !== null && sessionId !== undefined) {
+              openTarget('url', { sessionId, url: prepared.link.href }, point)
+              return
+            }
+            if (sessionId !== undefined && (prepared.selectionText !== '' || prepared.messageText !== '')) {
+              openTarget('chatMessage', { sessionId, selectionText: prepared.selectionText, messageText: prepared.messageText }, point)
+            }
+          }
+
+          const onContextMenu = (event) => {
+            // An official trigger already handled this gesture (or another
+            // surface claimed it): never steal it.
+            if (event === null || event === undefined || event.defaultPrevented === true) return
+            const raw = event.target
+            const target = raw instanceof Element ? raw : (raw !== null && raw !== undefined && raw.parentElement instanceof Element ? raw.parentElement : null)
+            if (target === null) return
+            if (target.closest(EDITABLE_SELECTOR) !== null) return
+            // Workspace rows, the workspace file tree and every other surface
+            // outside conversation content belong to the official UI.
+            const messageEl = target.closest(MESSAGE_SELECTOR)
+            if (messageEl === null) return
+
+            let prepared
+            try {
+              const rect = typeof target.getBoundingClientRect === 'function' && event.clientX === 0 && event.clientY === 0
+                ? target.getBoundingClientRect()
+                : undefined
+              const x = rect !== undefined ? rect.left : event.clientX
+              const y = rect !== undefined ? rect.bottom : event.clientY
+              const caret = caretInfoAt(x, y)
+              const selectionText = readSelectionWithin(messageEl)
+              const messageText = extractMessageText(messageEl)
+              const link = detectLink(target) ?? detectTextUrl(target, caret)
+              const candidates = buildCandidates(target, caret, messageEl, detectElementHint(target))
+              if (selectionText === '' && messageText === '' && link === null && candidates.length === 0) return
+              prepared = { x, y, selectionText, messageText, link, candidates }
+            } catch {
+              return
+            }
+
+            event.preventDefault()
+            event.stopPropagation()
+            const token = (gesture += 1)
+            void openSharedMenu(prepared, token)
+          }
+
+          document.addEventListener('contextmenu', onContextMenu)
+          return () => document.removeEventListener('contextmenu', onContextMenu)
+        }, 'chat-ctxmenu: prose fallback')
       },
     }
   },

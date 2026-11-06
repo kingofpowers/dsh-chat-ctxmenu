@@ -1,12 +1,15 @@
 /**
  * Dependency-free checks for the two halves of dsh-chat-ctxmenu.
  *
- * Run with:  node test/plugin.test.mjs
+ * Run with:  node --test
  *
  * The Host half is exercised through its real HTTP handler functions with mock
- * ctx services; the Client half is loaded through a stubbed `__ModuleLoader__`
- * so that the bundle factory and its slot registration are verified without a
- * browser. These checks do not replace looking at the running app.
+ * ctx services. The Client half is loaded through a stubbed `__ModuleLoader__`
+ * and driven through a stubbed official `contextMenus` service plus a minimal
+ * DOM: this verifies that contributions belong to the official targets, that
+ * the prose fallback never steals an official gesture, and that a verified
+ * prose path is handed to the official file menu. These checks do not replace
+ * looking at the running app.
  */
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
@@ -23,6 +26,8 @@ async function check(name, fn) {
     console.log(`FAIL  ${name}: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 5))
 
 // ---------------------------------------------------------------------------
 // Host half
@@ -173,7 +178,7 @@ await check('status reports platform, native channel, fs and revision', async ()
   assert.equal(body.canOpen, true)
   assert.equal(body.fs, true)
   assert.equal(body.maxPaths, 8)
-  assert.equal(body.rev, 4)
+  assert.equal(body.rev, 5)
 })
 
 await check('status probe resolves a relative path against the given cwd', async () => {
@@ -207,37 +212,6 @@ await check('resolve falls back to the session cwd when the client omits it', as
   const reply = await callRpc('resolve', { paths: ['src/app.ts'], sessionId: 'session-1' })
   assert.equal(reply.body.ok, true)
   assert.equal(reply.body.results[0].absolute, 'C:\\workspace\\src\\app.ts')
-})
-
-await check('open uses the native path channel with an AbortSignal', async () => {
-  nativeCalls.length = 0
-  const reply = await callRpc('open', { path: 'src/app.ts', cwd: 'C:\\workspace' })
-  assert.equal(reply.body.ok, true)
-  assert.equal(nativeCalls.length, 1)
-  assert.equal(nativeCalls[0].hasSignal, true)
-  assert.deepEqual(nativeCalls[0].request, { path: 'C:\\workspace\\src\\app.ts' })
-})
-
-await check('reveal sends action=reveal', async () => {
-  nativeCalls.length = 0
-  const reply = await callRpc('reveal', { path: 'src/app.ts', cwd: 'C:\\workspace' })
-  assert.equal(reply.body.ok, true)
-  assert.equal(nativeCalls[0].request.action, 'reveal')
-})
-
-await check('open refuses a path that does not exist', async () => {
-  const reply = await callRpc('open', { path: 'missing.ts', cwd: 'C:\\workspace' })
-  assert.equal(reply.body.ok, false)
-  assert.equal(reply.body.error, 'path-missing')
-})
-
-await check('native authorization refusal is terminal, not bypassed', async () => {
-  host.state.nativeError = { code: 'gateway/bad-request', message: 'Path has no verified Host path' }
-  const openReply = await callRpc('open', { path: 'src/app.ts', cwd: 'C:\\workspace' })
-  host.state.nativeError = null
-  assert.equal(openReply.body.ok, false)
-  assert.equal(openReply.body.error, 'gateway/bad-request')
-  assert.equal(openReply.body.fallbackError, undefined)
 })
 
 await check('apps lists registered applications and marks the default', async () => {
@@ -303,18 +277,18 @@ await check('openWith for a registered non-executable id uses the native channel
   assert.equal(nativeCalls[0].request.application, 'vscode')
 })
 
+await check('removed open/reveal/openUrl actions are gone instead of half-working', async () => {
+  for (const action of ['open', 'reveal', 'openUrl']) {
+    const reply = await callRpc(action, { path: 'src/app.ts', cwd: 'C:\\workspace' })
+    assert.equal(reply.body.ok, false, `expected ${action} to be unknown`)
+    assert.equal(reply.body.error, 'unknown-action')
+  }
+})
+
 await check('unknown actions fail without throwing', async () => {
   const reply = await callRpc('nope', {})
   assert.equal(reply.body.ok, false)
   assert.equal(reply.body.error, 'unknown-action')
-})
-
-await check('openUrl rejects non-http schemes, control characters and empty hosts', async () => {
-  for (const url of ['javascript:alert(1)', 'data:text/html,x', 'file:///C:/x', 'https://a\nb', 'http://']) {
-    const reply = await callRpc('openUrl', { url })
-    assert.equal(reply.body.ok, false, `expected rejection for ${JSON.stringify(url)}`)
-    assert.equal(reply.body.error, 'unsupported-url')
-  }
 })
 
 await check('non-loopback peers are rejected', async () => {
@@ -371,13 +345,92 @@ await check('teardown disposes both routes', () => {
 // Client half
 // ---------------------------------------------------------------------------
 
-const loaded = []
-globalThis.window = {
+// A tiny DOM: only the members the fallback listener touches. Element instances
+// resolve their selectors from a per-element map, which keeps the tests focused
+// on the plugin's decision instead of on browser parsing.
+class FakeElement {
+  constructor(spec = {}) {
+    this.tagName = spec.tagName ?? 'DIV'
+    this.innerText = spec.innerText ?? ''
+    this.textContent = spec.textContent ?? ''
+    this.attrs = spec.attrs ?? {}
+    this.selectors = spec.selectors ?? {}
+    this.clone = spec.clone
+  }
+
+  closest(selector) {
+    if (Object.prototype.hasOwnProperty.call(this.selectors, selector)) return this.selectors[selector]
+    return null
+  }
+
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null
+  }
+
+  getBoundingClientRect() {
+    return { left: 40, bottom: 60, right: 120, top: 20 }
+  }
+
+  contains() {
+    return true
+  }
+
+  cloneNode() {
+    return this.clone
+  }
+}
+
+const clipboard = { writes: [] }
+const documentListeners = { contextmenu: [] }
+let caret = null
+
+const messageText = 'see src/app.ts'
+const messageClone = { nodeType: 1, tagName: 'DIV', querySelectorAll: () => [], childNodes: [{ nodeType: 3, data: messageText }] }
+const messageEl = new FakeElement({ tagName: 'DIV', innerText: messageText, textContent: messageText, clone: messageClone })
+
+function setMessageText(text) {
+  messageEl.innerText = text
+  messageEl.textContent = text
+  messageClone.childNodes = [{ nodeType: 3, data: text }]
+}
+
+const windowStub = {
   __ModuleLoader__: {
     load(definition) {
       loaded.push(definition)
     },
   },
+  getSelection: () => ({ isCollapsed: true, toString: () => '', anchorNode: null }),
+  innerWidth: 1280,
+  innerHeight: 800,
+}
+
+const loaded = []
+globalThis.window = windowStub
+globalThis.Element = FakeElement
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: { language: 'zh-CN', clipboard: { writeText: async (text) => { clipboard.writes.push(text) } } },
+})
+globalThis.document = {
+  addEventListener(type, fn) {
+    if (documentListeners[type] !== undefined) documentListeners[type].push(fn)
+  },
+  removeEventListener(type, fn) {
+    const list = documentListeners[type]
+    if (list === undefined) return
+    const index = list.indexOf(fn)
+    if (index !== -1) list.splice(index, 1)
+  },
+  caretPositionFromPoint: () => caret,
+}
+
+const rpcReplies = new Map()
+globalThis.fetch = async (_url, options) => {
+  const request = JSON.parse(options.body)
+  const reply = rpcReplies.get(request.action)
+  if (reply === undefined) return { ok: false, status: 404, text: async () => '' }
+  return { ok: true, status: 200, text: async () => JSON.stringify(typeof reply === 'function' ? reply(request.args) : reply) }
 }
 
 await import('../client.js')
@@ -393,48 +446,322 @@ const ReactStub = {
   createElement(type, props, ...children) {
     return { type, props: props ?? {}, children }
   },
-  useRef(value) {
-    return { current: value }
-  },
-  useState(value) {
-    return [typeof value === 'function' ? value() : value, () => {}]
-  },
-  useEffect() {},
-  useLayoutEffect() {},
-  useCallback(fn) {
-    return fn
-  },
 }
-
 const plugin = loaded[0].factory((id) => {
   assert.equal(id, 'react')
   return ReactStub
 })
 
-await check('client plugin injects slots and registers one overlay entry', () => {
-  assert.deepEqual(plugin.inject, ['slots'])
-  const registrations = []
-  plugin.apply({
-    get(name) {
-      if (name === 'slots') {
-        return {
-          inject(owner, callback) {
-            assert.equal(owner, 'shell.overlay')
-            callback()
-          },
-          register(meta, component) {
-            registrations.push({ meta, component })
-          },
-        }
-      }
-      return undefined
+function makeClientCtx() {
+  const state = {
+    contributions: [],
+    opened: [],
+    notices: [],
+    icons: [],
+    effects: [],
+  }
+  const services = {
+    contextMenus: {
+      register(contribution) {
+        state.contributions.push(contribution)
+        return () => {}
+      },
+      open(target, point) {
+        state.opened.push({ target, point })
+      },
+      notify(text, success) {
+        state.notices.push({ text, success })
+      },
     },
-    effect() {},
+    sessions: {
+      list: {
+        getSnapshot: () => ({
+          ids: ['session-1'],
+          byId: {
+            'session-1': { cwd: 'C:\\workspace', retainedBy: { mainView: 1 } },
+          },
+        }),
+      },
+    },
+    locale: {
+      getLocale: () => ({ locale: 'zh' }),
+      register: () => () => {},
+    },
+    slots: {
+      inject(owner, callback) {
+        assert.equal(owner, 'contextMenu.icon')
+        callback()
+      },
+      register(meta, component) {
+        state.icons.push({ meta, component })
+        return () => {}
+      },
+    },
+  }
+  const ctx = {
+    get(name) {
+      return services[name]
+    },
+    effect(fn) {
+      const dispose = fn()
+      state.effects.push(typeof dispose === 'function' ? dispose : () => {})
+    },
+    logger: { warn() {}, debug() {} },
+  }
+  return { ctx, state }
+}
+
+const client = makeClientCtx()
+plugin.apply(client.ctx)
+
+await check('client injects the official context-menu services', () => {
+  assert.deepEqual(plugin.inject, ['contextMenus', 'sessions', 'locale', 'slots'])
+})
+
+await check('client contributes to the official targets only', () => {
+  const byId = new Map(client.state.contributions.map((entry) => [entry.id, entry]))
+  assert.deepEqual([...byId.keys()].sort(), [
+    'chat-ctxmenu.directory.copy-relative-path',
+    'chat-ctxmenu.file.copy-relative-path',
+    'chat-ctxmenu.file.open-with',
+    'chat-ctxmenu.image.copy-link',
+    'chat-ctxmenu.message.copy-message',
+    'chat-ctxmenu.message.copy-selection',
+  ])
+  assert.equal(byId.get('chat-ctxmenu.file.copy-relative-path').target, 'file')
+  assert.equal(byId.get('chat-ctxmenu.file.open-with').target, 'file')
+  assert.equal(byId.get('chat-ctxmenu.directory.copy-relative-path').target, 'directory')
+  assert.equal(byId.get('chat-ctxmenu.image.copy-link').target, 'image')
+  assert.equal(byId.get('chat-ctxmenu.message.copy-selection').target, 'chatMessage')
+  assert.equal(byId.get('chat-ctxmenu.message.copy-message').target, 'chatMessage')
+})
+
+await check('client registers an icon component for every contributed icon key', () => {
+  assert.equal(client.state.icons.length, 5)
+  for (const entry of client.state.icons) {
+    assert.equal(entry.meta.name, 'contextMenu.icon')
+    assert.match(entry.meta.key, /^chat-ctxmenu\./)
+    assert.equal(typeof entry.component, 'function')
+  }
+})
+
+await check('fallback listener is a bubble-phase document listener', () => {
+  assert.equal(documentListeners.contextmenu.length, 1)
+})
+
+function contextMenuEvent(target, overrides = {}) {
+  const event = {
+    target,
+    clientX: 30,
+    clientY: 50,
+    defaultPrevented: false,
+    prevented: 0,
+    stopped: 0,
+    preventDefault() {
+      this.prevented += 1
+      this.defaultPrevented = true
+    },
+    stopPropagation() {
+      this.stopped += 1
+    },
+    ...overrides,
+  }
+  return event
+}
+
+function conversationTarget() {
+  return new FakeElement({
+    tagName: 'SPAN',
+    selectors: {
+      '[data-chat-flow-kind]': messageEl,
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]': null,
+    },
   })
-  assert.equal(registrations.length, 1)
-  assert.equal(registrations[0].meta.name, 'shell.overlay')
-  assert.equal(registrations[0].meta.id, 'chat-ctxmenu')
-  assert.equal(typeof registrations[0].component, 'function')
+}
+
+function workspaceTarget() {
+  return new FakeElement({
+    tagName: 'DIV',
+    selectors: {
+      '[data-chat-flow-kind]': null,
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]': null,
+    },
+  })
+}
+
+function editableTarget() {
+  const editable = new FakeElement({ tagName: 'TEXTAREA' })
+  return new FakeElement({
+    tagName: 'TEXTAREA',
+    selectors: {
+      '[data-chat-flow-kind]': messageEl,
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]': editable,
+    },
+  })
+}
+
+await check('fallback never steals a gesture the official menu already handled', async () => {
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget(), { defaultPrevented: true })
+  documentListeners.contextmenu[0](event)
+  await flush()
+  assert.equal(client.state.opened.length, 0)
+  assert.equal(event.prevented, 0)
+})
+
+await check('fallback leaves workspace and other surfaces to the official UI', async () => {
+  client.state.opened.length = 0
+  const event = contextMenuEvent(workspaceTarget())
+  documentListeners.contextmenu[0](event)
+  await flush()
+  assert.equal(client.state.opened.length, 0)
+  assert.equal(event.prevented, 0)
+})
+
+await check('fallback ignores editable fields', async () => {
+  client.state.opened.length = 0
+  const event = contextMenuEvent(editableTarget())
+  documentListeners.contextmenu[0](event)
+  await flush()
+  assert.equal(client.state.opened.length, 0)
+  assert.equal(event.prevented, 0)
+})
+
+await check('plain conversation text opens the plugin chatMessage target', async () => {
+  caret = null
+  setMessageText('hello world')
+  rpcReplies.clear()
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget())
+  documentListeners.contextmenu[0](event)
+  await flush()
+  assert.equal(event.prevented, 1)
+  assert.equal(client.state.opened.length, 1)
+  const opened = client.state.opened[0]
+  assert.equal(opened.target.kind, 'chatMessage')
+  assert.equal(opened.target.value.sessionId, 'session-1')
+  assert.equal(opened.target.value.messageText, 'hello world')
+  assert.deepEqual(opened.point, { x: 30, y: 50 })
+})
+
+await check('a verified prose path opens the official file menu with the resolved absolute path', async () => {
+  caret = { offsetNode: { nodeType: 3, data: 'see src/app.ts' }, offset: 8 }
+  messageEl.innerText = 'see src/app.ts'
+  messageEl.textContent = 'see src/app.ts'
+  messageClone.childNodes = [{ nodeType: 3, data: 'see src/app.ts' }]
+  rpcReplies.clear()
+  rpcReplies.set('resolve', () => ({
+    ok: true,
+    results: [{ exists: true, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }],
+  }))
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget())
+  documentListeners.contextmenu[0](event)
+  await flush()
+  assert.equal(client.state.opened.length, 1)
+  const opened = client.state.opened[0]
+  assert.equal(opened.target.kind, 'file')
+  assert.deepEqual(opened.target.value, { sessionId: 'session-1', path: 'C:\\workspace\\src\\app.ts' })
+})
+
+await check('a missing prose path falls back to the chatMessage target', async () => {
+  caret = { offsetNode: { nodeType: 3, data: 'see src/app.ts' }, offset: 8 }
+  messageEl.innerText = 'see src/app.ts'
+  messageEl.textContent = 'see src/app.ts'
+  messageClone.childNodes = [{ nodeType: 3, data: 'see src/app.ts' }]
+  rpcReplies.clear()
+  rpcReplies.set('resolve', () => ({ ok: true, results: [{ exists: false, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] }))
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget())
+  documentListeners.contextmenu[0](event)
+  await flush()
+  assert.equal(client.state.opened.length, 1)
+  assert.equal(client.state.opened[0].target.kind, 'chatMessage')
+})
+
+function contribution(id) {
+  const found = client.state.contributions.find((entry) => entry.id === id)
+  assert.notEqual(found, undefined, `missing contribution ${id}`)
+  return found
+}
+
+await check('file contribution copies a workspace-relative path', async () => {
+  clipboard.writes.length = 0
+  const actions = await contribution('chat-ctxmenu.file.copy-relative-path').resolve({ sessionId: 'session-1', path: 'src/app.ts' }, new AbortController().signal)
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0].id, 'copyRelativePath')
+  await actions[0].run()
+  assert.deepEqual(clipboard.writes, ['src/app.ts'])
+})
+
+await check('file contribution hides a relative path outside the workspace', async () => {
+  const actions = await contribution('chat-ctxmenu.file.copy-relative-path').resolve({ sessionId: 'session-1', path: 'D:\\elsewhere\\app.ts' }, new AbortController().signal)
+  assert.deepEqual(actions, [])
+})
+
+await check('directory contribution copies a workspace-relative path', async () => {
+  clipboard.writes.length = 0
+  const actions = await contribution('chat-ctxmenu.directory.copy-relative-path').resolve({ sessionId: 'session-1', path: 'src' }, new AbortController().signal)
+  assert.equal(actions.length, 1)
+  await actions[0].run()
+  assert.deepEqual(clipboard.writes, ['src'])
+})
+
+await check('image contribution only offers an http(s) link', async () => {
+  const httpActions = await contribution('chat-ctxmenu.image.copy-link').resolve({ url: 'https://example.test/a.png' }, new AbortController().signal)
+  assert.equal(httpActions.length, 1)
+  clipboard.writes.length = 0
+  await httpActions[0].run()
+  assert.deepEqual(clipboard.writes, ['https://example.test/a.png'])
+  const blobActions = await contribution('chat-ctxmenu.image.copy-link').resolve({ url: 'blob:http://127.0.0.1/abc' }, new AbortController().signal)
+  assert.deepEqual(blobActions, [])
+})
+
+await check('open-with contribution lists registered applications and the OS chooser', async () => {
+  rpcReplies.clear()
+  rpcReplies.set('apps', () => ({
+    ok: true,
+    canOpenWithDialog: true,
+    apps: [
+      { id: 'C:\\Program Files\\App\\app.exe', name: 'App', isDefault: true },
+      { id: 'Microsoft.WindowsNotepad_8wekyb3d8bbwe!App', name: 'Notepad', isDefault: false },
+    ],
+  }))
+  const actions = await contribution('chat-ctxmenu.file.open-with').resolve({ sessionId: 'session-1', path: 'src/app.ts' }, new AbortController().signal)
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0].id, 'openWith')
+  assert.equal(actions[0].children.length, 3)
+  assert.deepEqual(actions[0].children.map((child) => child.id), [
+    'application:C:\\Program Files\\App\\app.exe',
+    'application:Microsoft.WindowsNotepad_8wekyb3d8bbwe!App',
+    'application:choose',
+  ])
+})
+
+await check('open-with contribution disappears when the host lists no application', async () => {
+  rpcReplies.clear()
+  rpcReplies.set('apps', () => ({ ok: true, canOpenWithDialog: false, apps: [] }))
+  const actions = await contribution('chat-ctxmenu.file.open-with').resolve({ sessionId: 'session-1', path: 'src/app.ts' }, new AbortController().signal)
+  assert.deepEqual(actions, [])
+})
+
+await check('chatMessage contributions copy the captured selection and message', async () => {
+  const selectionActions = await contribution('chat-ctxmenu.message.copy-selection').resolve({ selectionText: 'src/app.ts', messageText: 'see src/app.ts' }, new AbortController().signal)
+  assert.equal(selectionActions.length, 1)
+  clipboard.writes.length = 0
+  await selectionActions[0].run()
+  assert.deepEqual(clipboard.writes, ['src/app.ts'])
+
+  const messageActions = await contribution('chat-ctxmenu.message.copy-message').resolve({ selectionText: '', messageText: 'see src/app.ts' }, new AbortController().signal)
+  assert.equal(messageActions.length, 1)
+  clipboard.writes.length = 0
+  await messageActions[0].run()
+  assert.deepEqual(clipboard.writes, ['see src/app.ts'])
+})
+
+await check('teardown removes the fallback listener', () => {
+  for (const dispose of client.state.effects) dispose()
+  assert.equal(documentListeners.contextmenu.length, 0)
 })
 
 // ---------------------------------------------------------------------------

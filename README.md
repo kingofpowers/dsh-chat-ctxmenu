@@ -1,51 +1,65 @@
-# dsh-chat-ctxmenu — 对话右键菜单
+# dsh-chat-ctxmenu — 对话右键菜单（官方菜单增强）
 
-给 DeepSeek Harness 的对话区加一个真正好用的右键菜单：**复制文本 / 打开文件 / 在文件管理器中显示**。
+给 DeepSeek Harness 的对话区右键加**只有它才能提供**的能力，其余右键交给 DSH 官方菜单。
 
-现有市面插件（`dsh-filemenu`、`@z1995418/dsh-file-menu` 等）的主要问题是：只认绝对路径、只认助手消息气泡、命中不了就什么都不弹。这个插件针对这三点重做：
+从 **2.0.0** 起，本插件不再绘制自己的菜单，也不再安装捕获阶段的全局 `contextmenu` 监听：DSH 0.2.2 的官方右键菜单框架（`@deepseek-ai/dsh-client-ui-context-menu`）负责手势、视口定位、键盘导航、图标与提示，本插件只向官方菜单**贡献条目**，并为官方没有接管的正文手势提供一层兜底。
 
-- **光标优先**：右键落点所在的文本 token 优先，其次元素 `title` 提示（产出文件 chip、内联引用、工具卡按钮），最后回退到所在文本块。
-- **相对路径**：按会话工作目录（session cwd）解析，`src/app.ts`、`./dist/x.js`、反引号里的 `package.json` 都能用；`~/…`、UNC、驱动器路径、POSIX 绝对路径同样支持。
-- **不误判**：所有候选路径都交给 Host 用真实 `fs` 校验；**只有确认存在**的路径才出现「打开 / 显示 / 其他应用」，「复制路径」也只在候选可信（绝对路径、代码块、显式提示）时出现。正文里的 `and/or` 这类文本不会产生文件菜单。
-- **全消息类型**：用户消息、助手消息、工具调用结果都用同一套 `[data-chat-flow-kind]` 容器识别。
+- **官方已接管，本插件不重复**：对话内 Markdown 文件 / 链接 / 图片 / 引用 chip / 工具文件控件，以及工作区行、工作区文件树。打开、在文件管理器中显示、复制路径 / 链接、复制图片、下载 / 另存为都由官方 `ui-open-in-app`、`ui-file-actions` 提供。
+- **本插件贡献**：
+  - 文件：**复制相对路径**、**用其他应用打开 ▸**（系统为该文件注册的应用列表 + Windows「选择其他程序…」）；
+  - 目录：**复制相对路径**；
+  - 图片：**复制图片链接**（仅 http(s) 来源）；
+  - 正文纯文本：**复制选中内容**、**复制整条消息**（插件自定义的 `chatMessage` 目标）。
+- **正文里的路径识别仍然保留**：右键落在正文里的 `src/app.ts`、`./dist/x.js`、`~/…`、UNC、驱动器路径、`path:line:col`、代码块里的裸文件名时，先由 Host 校验存在性，再交给**官方文件菜单**打开（因此打开/显示/复制路径仍走官方实现）。
 
-## 菜单内容
+## 菜单内容（2.0.0）
 
-| 右键位置 | 菜单项 |
-| --- | --- |
-| 任意对话文本 | 复制选中内容（有选区时）· 复制整条消息 |
-| 文件路径（正文 / 内联代码 / 产出文件 chip / 工具卡） | 打开 · 在文件管理器中显示 · 用其他应用打开 ▸（系统为该文件注册的应用 + 选择其他程序…）· 复制路径 · 复制相对路径 · 复制选中内容 · 复制整条消息 |
-| 图片（消息里的图片、缩略图、点击预览后的原图） | 复制图片 · 复制图片链接 · 另存为图片 |
-| 链接 | 在浏览器中打开 · 复制链接 |
+| 右键位置 | 谁提供 | 菜单项 |
+| --- | --- | --- |
+| 正文纯文本 / 工具结果 | 本插件 | 复制选中内容（有选区时）· 复制整条消息 |
+| 正文里的路径 token（经 Host 校验存在） | 本插件识别 → 官方菜单 | 打开 · 在文件管理器中显示 · 默认应用打开 · 复制路径 · **复制相对路径** · **用其他应用打开 ▸** · 在侧栏/浮窗打开 |
+| Markdown 文件 / 引用 chip / 工具文件控件 | 官方 | 同上（官方条目）+ 本插件的**复制相对路径**、**用其他应用打开 ▸** |
+| 链接 / 正文 URL | 官方 | 在侧栏打开 · 浏览器打开 · 复制链接 |
+| 图片（消息图片、原图预览） | 官方 + 本插件 | 复制图片 · 下载 · 另存为 · 显示位置 · **复制图片链接** |
+| 工作区行 / 工作区文件树 | 官方 | 由 DSH 官方提供，本插件不干预 |
 
-- 文件夹：`打开` = 在文件管理器中打开该文件夹；`在文件管理器中显示` = 在父目录中选中它。
-- 图片：`复制图片` 会把图片转成 PNG 写入剪贴板（可直接粘进微信/文档/画图）；如果当前环境拒绝图片剪贴板，会自动降级为复制图片链接并提示。`另存为图片` 优先保留原始格式。
-- 菜单跟随光标并自动避开视口边缘；Esc / 点击外部 / 滚动关闭；支持 ↑↓/Enter 键盘操作。
+- `用其他应用打开 ▸` 的应用 id 必须先出现在系统的「打开方式」注册列表里；未注册的 id 一律拒绝（防止伪造请求拉起任意程序）。Windows 上对「已注册、且 id 就是 exe 路径」的应用直接 `spawn(exe, [file])`——Harness 原生 `IHandler::Invoke` 对多数 Win32 处理器无效；UWP/AUMID 等非 exe id 仍走原生通道。选择前会校验注册关系，直接启动失败时再回退原生通道并回报具体错误。
 
 ## 实现方式
 
 ```
 Client（浏览器）
-  shell.overlay 条目：document capture 阶段的 contextmenu 监听
-  → 光标 caret 定位 token / 元素提示 / 文本块扫描
-  → POST /dsh-chat-ctxmenu/rpc  { action, args }
-Host（Node）
-  resolve  → fs.resolve + lstat + listDir（相对路径按会话 cwd）
-  open / reveal / apps / openWith
-           → sessionController.openWorkspacePath / workspacePathApplications
-             （与会话头部 Open In… 同一条原生授权通道）
-  openUrl  → Start-Process / open / xdg-open
+  ctx.contextMenus.register  ── 向官方目标贡献条目
+      file      → 复制相对路径、用其他应用打开 ▸（Host RPC: apps/openWith/openWithDialog）
+      directory → 复制相对路径
+      image     → 复制图片链接
+      chatMessage（插件自定义目标）→ 复制选中内容 / 复制整条消息
+  document 'contextmenu'（冒泡阶段，兜底）
+      官方已处理（event.defaultPrevented）→ 让位
+      非对话正文 / 输入框 / 工作区           → 让位
+      正文路径 token → Host resolve 校验 → 官方 file/directory 菜单
+      正文 URL       → 官方 url 菜单
+      其余正文       → chatMessage 菜单
+Host（Node，仅保留官方菜单拿不到的能力）
+  resolve  → fs.resolve + stat/lstat（相对路径按会话 cwd，~ 展开）
+  apps     → sessionController.workspacePathApplications
+  openWith / openWithDialog → 原生授权通道 + Windows 直接 spawn 兜底
+  status   → 诊断
 ```
 
-回退：若 `sessionController` 服务不存在，`open`/`reveal` 退回 `node:child_process` 调系统打开器（explorer / open / xdg-open），并等待子进程真正 `spawn` 才报成功；若原生通道**明确拒绝**（`gateway/bad-request`、`gateway/cancelled`、`native-open-unavailable` 等），则视为终态、不回退，避免绕过 Harness 的授权判定。
+安全边界：
 
-会话工作目录取自 Client 的 `useSessions` 快照，同时兼容两种形状：`{ current }` 与 `{ ids, byId, retainedBy.mainView }`。
+- 两个路由只接受 **loopback** 对端；带 `Origin` 时必须与 Harness 自身 origin 同源（未知 origin 直接拒绝）。
+- 不做文件写入、不读文件内容：只做存在性校验与系统打开。
+- 路径来自用户右键的文本，必须通过 Host `fs` 校验存在才会交给官方文件菜单；`用其他应用打开` 只接受系统已注册为该文件打开方式的应用 id。
 
-所有候选路径都先由 Host 的 `fs` 服务校验存在性（`path:line` 会先剥离行号，`~/` 会展开为 home），只有确认存在的路径才会出现打开类菜单。
+## 环境要求
+
+- DSH **>= 0.2.2-rc.1 < 0.3.0**（`engines.dsh`）。0.2.2 是本插件依赖官方 `contextMenus` 服务的最低版本；在 0.2.1 及更早版本上插件不会被加载。
 
 ## 安装
 
-### 从 npm 安装（发布后）
+### 从 npm 安装
 
 ```bash
 dsh plugin --profile desktop add dsh-chat-ctxmenu
@@ -62,7 +76,7 @@ plugin_manager action=install_bundle target=dsh-chat-ctxmenu
 ```bash
 dsh plugin --profile desktop add <本目录绝对路径>
 # 或
-dsh plugin --profile desktop add ./release/dsh-chat-ctxmenu-1.0.0.tgz
+dsh plugin --profile desktop add ./release/dsh-chat-ctxmenu-2.0.0.tgz
 ```
 
 在 DSH 会话中让 agent 执行（bundle 目录为本仓库）：
@@ -71,68 +85,60 @@ dsh plugin --profile desktop add ./release/dsh-chat-ctxmenu-1.0.0.tgz
 plugin_manager action=install_bundle target=<本目录绝对路径>
 ```
 
-安装后 Host 侧热加载；浏览器端刷新页面后生效（client 半在页面刷新时加载）。
+安装后 Host 侧热加载；浏览器端刷新页面后生效（client 半在页面引导时加载）。
+
 检查：
 
 ```text
-cordis_inspect_query client Slots.listSubTree root=shell.overlay   # 应出现 chat-ctxmenu
+cordis_inspect_query client Slots.listSubTree root=shell.overlay   # 应出现 context-menu（官方浮层）
 GET /dsh-chat-ctxmenu/status                                        # 应返回 ok:true
 ```
 
 卸载：`plugin_manager action=remove_bundle target=dsh-chat-ctxmenu`。
 
-## 发布
-
-```bash
-npm pack                       # 产物 release-*.tgz，先用 npm pack --dry-run 检查文件清单
-npm publish                    # 需要先 npm login（或配置 //registry.npmjs.org/:_authToken）
-```
-
-发布后可用 `npm view dsh-chat-ctxmenu version` 校验；包内只包含 `index.js`、`client.js`、
-`cordis.patch.yml`、`locale/*`、`icon.svg`、`README.md`、`LICENSE`、`package.json`（见 `files`）。
-
 ## RPC 路由
 
 | 路由 | 方法 | 说明 |
 | --- | --- | --- |
-| `/dsh-chat-ctxmenu/rpc` | POST | `{action, args}`；动作：`resolve` `open` `reveal` `apps` `openWith` `openWithDialog` `openUrl` `status` |
+| `/dsh-chat-ctxmenu/rpc` | POST | `{action, args}`；动作：`resolve` `apps` `openWith` `openWithDialog` `status` |
 | `/dsh-chat-ctxmenu/status` | GET | 诊断：平台、原生通道是否可用、`canOpen`、`rev`；`?probe=<path>&cwd=<dir>` 可验证路径解析 |
 
-## 安全边界
+2.0.0 移除了 `open` / `reveal` / `openUrl`：这些能力由官方菜单承担，本插件不再提供第二条打开通道。
 
-- 两个路由只接受 **loopback** 对端，且带 `Origin` 时必须与 Harness 自身 origin 同源；远程浏览器无法借此打开宿主机文件（与原生 `canOpenWorkspacePath` 的语义一致）。
-- 不做任意路径写入：只做「存在性检查 + 交给系统打开器」，不读取文件内容。
-- 路径来自用户右键的文本，且必须通过 `fs` 校验存在，避免把误识别文本变成打开动作。
+## 升级说明（1.x → 2.x）
+
+- 自绘菜单、捕获阶段监听、图片复制/另存为、链接打开/复制、打开/显示/复制路径的**自有实现**均已移除，改由 DSH 0.2.2 官方右键菜单提供；本插件保留官方没有的条目（见上表）。
+- 插件版本提升到 **2.0.0**，`engines.dsh` 收紧到 `>=0.2.2-rc.1 <0.3.0`：旧 DSH 上请继续使用 1.0.3。
+- 设置项无变化；没有持久化数据。
 
 ## 已知限制
 
-- 依赖对话节点带 `data-chat-flow-kind` 标记；若未来 DSH 改动该标记，菜单会静默不触发（不会误弹）。诊断时先看 `/status` 与会话 DOM。
-- 纯正文里无分隔符、无反引号的单词文件名（如「改一下 index.js」）只有在**会话工作目录下确实存在同名文件**时才会出现打开项；这是刻意避免误判。
-- 一次菜单最多解析 8 个候选路径，取第一个真实存在的；同一文本块出现多个候选时只接受唯一的绝对路径，避免「点 A 打开 B」。
+- 依赖对话节点带 `data-chat-flow-kind` 标记（官方 Chat 视图仍在用）；若未来 DSH 改动该标记，正文兜底会静默不触发（不会误弹）。
+- 官方菜单的「复制路径」复制绝对路径；「复制相对路径」是本插件补充的独立条目，仅当目标位于会话工作区内时出现。
+- 正文里的裸文件名（如「改一下 index.js」）只会在**会话工作目录下确实存在同名文件**时出现文件菜单——刻意避免误判。
+- 一次右键最多解析 8 个候选路径，取第一个真实存在的；同一文本块出现多个候选时只接受唯一的绝对路径，避免「点 A 打开 B」。
 - 未加引号、含空格的 Windows 路径会同时提交「截断版 + 扩展版」两个候选，由 Host 取存在的那个。
-- 代码块内的 `path:line` / `path:line:col` 会剥离行号后再解析，行号只用于菜单标题展示。
-- `用其他应用打开 ▸` 的列表来自系统注册信息（默认程序会标注「默认」）；列表为空时仍提供「选择其他程序…」（Windows）。
-- **Windows 上「用其他应用打开」的实现**：系统注册信息里的应用 id 就是该应用的 exe 路径。Harness 原生的 `openFileApplication` 走 `IHandler::Invoke(IDataObject)`，多数 Win32 处理器没有实现该调用（会抛错或静默不启动），所以本插件对「已注册为打开方式且 id 是 exe 路径」的应用直接 `spawn(exe, [file])`；UWP/AUMID 等非 exe id 仍走原生通道。选择前会先用系统注册列表校验该 id 确实注册为此文件的打开方式，未注册的 id 一律拒绝（防止伪造请求拉起任意程序）。若直接启动失败，会再尝试一次原生通道并回报具体错误，不会假报成功。
-- **修改插件代码后的生效方式**：`plugin_manager remove_bundle` → `install_bundle` 可让 Host 半边热更新；浏览器端需要刷新页面（client 半在页面引导时加载）。只改 `client.js` 也要重新安装，否则页面拿到的仍是旧 bundle。
+- `用其他应用打开 ▸` 的子项在官方菜单打开前异步读取（受官方 `resolutionTimeoutMs` 限制，默认 1s）；应用列表读取失败时该条目直接不出现，不弹空菜单。
+- 官方菜单同样把「工作区行 / 工作区文件树」的右键视为官方领域；本插件只在对话正文内兜底，不越界。
 
 ## 开发自检
 
 ```bash
-node test/plugin.test.mjs
+node --test
 ```
 
-覆盖：Host 路由注册、状态、相对路径解析（含 session cwd 兜底）、不存在的路径拒绝打开、应用列表、未知动作、非 loopback/跨源拒绝、卸载清理；Client bundle 工厂与 `shell.overlay` 注册。
+覆盖：Host 路由注册与状态（`rev=5`）、相对路径/`~` 解析、应用列表、`openWith` 注册校验、已移除动作、loopback/同源/跨站/请求体上限、卸载清理；Client 端官方贡献项的目标与 id、图标注册、兜底监听不抢官方手势（`defaultPrevented` / 工作区 / 输入框）、正文纯文本 → `chatMessage`、正文路径 → 官方 `file` 菜单、缺失路径回退、相对路径与打开方式条目、卸载清理。
 
 ## 文件结构
 
 ```text
 dsh-chat-ctxmenu/
-├── index.js            Host 半边：fs 解析 + 原生打开通道 + HTTP RPC
-├── client.js           Client 半边：shell.overlay + 右键菜单 UI
-├── cordis.patch.yml    bundle 行（insert chat-ctxmenu）
-├── package.json        dsh.bundle / dsh.client 声明
+├── index.js            Host 半边：路径校验 + 应用列表 + 打开方式 + HTTP RPC
+├── client.js           Client 半边：官方 contextMenus 贡献项 + 正文兜底监听
+├── cordis.patch.yml    bundle 行（insert chat-ctxmenu，Host 行）
+├── package.json        dsh.bundle / dsh.client / engines.dsh 声明
 ├── locale/{zh,en}.json 插件管理页的标题与描述
 ├── icon.svg            图标（原创）
 ├── test/plugin.test.mjs 无依赖自检
-└── tools/asar-read.mjs 开发期读取已安装 DSH（asar）实现的小工具，不参与插件运行
+└── tools/asar-*.mjs    开发期读取已安装 DSH（asar）实现的小工具，不参与插件运行
 ```

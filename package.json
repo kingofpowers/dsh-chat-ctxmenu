@@ -1,8 +1,8 @@
 {
   "name": "dsh-chat-ctxmenu",
-  "version": "1.0.3",
+  "version": "2.0.0",
   "type": "module",
-  "description": "Right-click conversation content to copy text or images, open file paths, and reveal them in the file manager.",
+  "description": "Adds chat-specific actions to the official DSH context menu: copy the whole message, copy a relative path, and open a file with any registered application. Verifies prose paths on the Host before offering the official file menu.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -20,10 +20,11 @@
     "context-menu",
     "right-click",
     "file-menu",
-    "copy-image"
+    "copy-message"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "exports": {
     ".": "./index.js",
@@ -49,8 +50,7 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-context-menu"
       ]
     }
   }

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Chat Context Menu",
-    "description": "Right-click conversation content to copy text or the whole message; on a file path, open it, reveal it in the file manager, open it with another app, and copy its path."
+    "description": "Adds chat-specific entries to the official DSH context menu: copy the whole message, copy a relative path, and open a file with any registered application. Paths in message prose are verified on the Host before the official file menu is offered."
   }
 }
