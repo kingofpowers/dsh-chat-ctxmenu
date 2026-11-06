@@ -40,6 +40,7 @@ await check('package declares the DSH 0.2.2 client contract', () => {
   assert.equal(manifest.engines?.dsh, '>=0.2.2-rc.1 <0.3.0')
   assert.deepEqual(manifest.dsh?.client?.inject, [
     '@deepseek-ai/dsh-client-locale',
+    '@deepseek-ai/dsh-api-session-controller',
     '@deepseek-ai/dsh-client-ui-context-menu',
   ])
   assert.equal(manifest.exports?.['./client'], './client.js')
@@ -433,7 +434,16 @@ Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
   value: { language: 'zh-CN', clipboard: { writeText: async (text) => { clipboard.writes.push(text) } } },
 })
+let documentExecCommand = () => false
 globalThis.document = {
+  body: {
+    appendChild() {},
+    removeChild() {},
+  },
+  createElement() {
+    return { style: {}, value: '', setAttribute() {}, select() {} }
+  },
+  execCommand: () => documentExecCommand(),
   addEventListener(type, fn, options) {
     if (documentListeners[type] === undefined) return
     const capture = options === true || (typeof options === 'object' && options !== null && options.capture === true)
@@ -849,6 +859,23 @@ await check('chatMessage contributions copy the captured selection and message',
   clipboard.writes.length = 0
   await messageActions[0].run()
   assert.deepEqual(clipboard.writes, ['see src/app.ts'])
+})
+
+await check('copy rows fall back to document.execCommand when the clipboard API is denied', async () => {
+  const clipboardWrite = navigator.clipboard.writeText
+  navigator.clipboard.writeText = async () => {
+    throw new Error('clipboard-denied')
+  }
+  documentExecCommand = () => true
+  client.state.notices.length = 0
+  try {
+    const actions = await contribution('chat-ctxmenu.message.copy-message').resolve({ selectionText: '', messageText: 'see src/app.ts' }, new AbortController().signal)
+    await actions[0].run()
+  } finally {
+    navigator.clipboard.writeText = clipboardWrite
+    documentExecCommand = () => false
+  }
+  assert.equal(client.state.notices.length, 1)
 })
 
 await check('teardown removes the fallback listener', () => {

@@ -50,6 +50,7 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-context-menu"
       ]
     }

@@ -659,11 +659,35 @@ window.__ModuleLoader__.load({
         const cwdFor = (sessionId) => sessionCwd(sessions, sessionId)
         const absoluteFor = (sessionId, path) => absolutePathOf(cwdFor(sessionId), path)
 
+        /**
+         * Clipboard API first; a browser that denies it (insecure origin, denied
+         * permission, missing user activation) falls back to the legacy
+         * selection-based copy this plugin used before the official-menu
+         * migration, so its own rows keep working there.
+         */
         const copyText = async (text) => {
           try {
-            if (typeof navigator === 'undefined' || navigator === null || navigator.clipboard === undefined || typeof navigator.clipboard.writeText !== 'function') return false
-            await navigator.clipboard.writeText(text)
-            return true
+            if (typeof navigator !== 'undefined' && navigator !== null && navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === 'function') {
+              await navigator.clipboard.writeText(text)
+              return true
+            }
+          } catch {
+            // fall through to the selection-based fallback
+          }
+          try {
+            if (typeof document === 'undefined' || document === null || typeof document.createElement !== 'function') return false
+            if (document.body === undefined || document.body === null) return false
+            const area = document.createElement('textarea')
+            area.value = text
+            area.setAttribute('readonly', '')
+            area.style.position = 'fixed'
+            area.style.top = '-1000px'
+            area.style.opacity = '0'
+            document.body.appendChild(area)
+            area.select()
+            const copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+            document.body.removeChild(area)
+            return copied === true
           } catch {
             return false
           }
