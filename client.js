@@ -17,18 +17,22 @@
  *   - `chatMessage` → a plugin-defined target used for plain message text:
  *                 "Copy selection" and "Copy whole message".
  *
- * Two document listeners cooperate for gestures the official chat surface does
+ * Three document listeners cooperate for gestures the official chat surface does
  * not claim:
  *
- *   - a capture-phase counter only — it never calls preventDefault and never
- *     opens anything; it invalidates a pending fallback resolve whenever a
- *     newer gesture happens (pointer or keyboard);
- *   - a bubble-phase handler that checks `event.defaultPrevented` (official
- *     triggers sit on their own elements, call preventDefault + stopPropagation,
- *     and are therefore never stolen), then decides *which official target* the
- *     gesture belongs to. Gestures outside conversation content — the workspace
- *     rows, any other surface — are left entirely to the official UI. A URL
- *     under the caret outranks any path token in the same block; otherwise a
+ *   - a capture-phase `contextmenu` counter only — it never calls preventDefault
+ *     and never opens anything; it invalidates a pending fallback resolve
+ *     whenever a newer pointer gesture happens;
+ *   - a capture-phase `keydown` invalidator for ContextMenu / Shift+F10, because
+ *     an official keyboard menu calls preventDefault on keydown and dispatches
+ *     no contextmenu event;
+ *   - a bubble-phase `contextmenu` handler that checks `event.defaultPrevented`
+ *     (official triggers sit on their own elements, call preventDefault +
+ *     stopPropagation, and are therefore never stolen), then decides *which
+ *     official target* the gesture belongs to. Gestures outside conversation
+ *     content — the workspace rows, any other surface — are left entirely to the
+ *     official UI. A URL under the caret outranks any path token in the same
+ *     block; otherwise a
  *     path-shaped token (relative path, `~`, UNC, `path:line`, bare filename) is
  *     verified by the Host and opens the official `file`/`directory` menu; any
  *     other text opens the plugin's `chatMessage` menu.
@@ -957,9 +961,14 @@ window.__ModuleLoader__.load({
 
           // Official keyboard triggers (ContextMenu / Shift+F10) call
           // preventDefault() on keydown instead of dispatching a contextmenu
-          // event, so they need their own invalidation.
+          // event, so they need their own invalidation. Match the official
+          // trigger's own filters so a modified or repeated key does not cancel
+          // a fallback for a menu that will not open.
           const invalidatePendingKeyGesture = (event) => {
             if (event === null || event === undefined) return
+            if (event.repeat === true || event.ctrlKey === true || event.altKey === true || event.metaKey === true) return
+            if (event.nativeEvent !== undefined && event.nativeEvent !== null && event.nativeEvent.isComposing === true) return
+            if (event.isComposing === true) return
             if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey === true)) gesture += 1
           }
 

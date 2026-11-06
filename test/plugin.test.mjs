@@ -785,14 +785,19 @@ await check('a caret URL outranks a path token in the same block', async () => {
   const text = 'see src/app.ts and https://example.test/x now'
   caret = { offsetNode: { nodeType: 3, data: text }, offset: 30 }
   setMessageText(text)
+  let resolveCalls = 0
   rpcReplies.clear()
-  rpcReplies.set('resolve', () => ({ ok: true, results: [{ exists: true, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] }))
+  rpcReplies.set('resolve', () => {
+    resolveCalls += 1
+    return { ok: true, results: [{ exists: true, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] }
+  })
   client.state.opened.length = 0
   const event = contextMenuEvent(conversationTarget())
   dispatchContextMenu(event)
   await flush()
   assert.equal(client.state.opened.length, 1)
   assert.equal(client.state.opened[0].target.kind, 'url')
+  assert.equal(resolveCalls, 0, 'a caret URL must not resolve path candidates first')
 })
 
 await check('a textless hinted gesture leaves the native menu alone', async () => {

@@ -2,9 +2,9 @@
 
 给 DeepSeek Harness 的对话区右键加**只有它才能提供**的能力，其余右键交给 DSH 官方菜单。
 
-从 **2.0.0** 起，本插件不再绘制自己的菜单：DSH 0.2.2 的官方右键菜单框架（`@deepseek-ai/dsh-client-ui-context-menu`）负责手势、视口定位、键盘导航、图标与提示，本插件只向官方菜单**贡献条目**，并为官方没有接管的正文手势提供一层兜底。兜底由两个 document 监听组成：一个**捕获阶段的纯计数器**（只让仍在等待 Host 的旧兜底失效，绝不 `preventDefault`、绝不打开菜单），和一个**冒泡阶段处理器**（官方已处理时让位）。
+从 **2.0.0** 起，本插件不再绘制自己的菜单：DSH 0.2.2 的官方右键菜单框架（`@deepseek-ai/dsh-client-ui-context-menu`）负责手势、视口定位、键盘导航、图标与提示，本插件只向官方菜单**贡献条目**，并为官方没有接管的正文手势提供一层兜底。兜底由**三个** document 监听组成：`contextmenu` **捕获阶段的纯计数器**（只让仍在等待 Host 的旧兜底失效，绝不 `preventDefault`、绝不打开菜单）、`keydown` **捕获阶段的键盘失效器**（官方 ContextMenu / Shift+F10 只在 keydown 里 preventDefault，不派发 contextmenu），以及 `contextmenu` **冒泡阶段处理器**（官方已处理时让位）。
 
-- **手势 hook 归官方**：右键/键盘触发元素的绑定、视口定位、键盘导航、图标与提示都由官方 `@deepseek-ai/dsh-client-ui-context-menu` 负责；实际触发点分布在 `ui-chat`、`ui-tool`、`ui-reference`、`ui-sidebar-files`，菜单条目由 `ui-open-in-app`、`ui-file-actions` 及本插件贡献。本插件不绘制菜单。
+- **手势 hook 归官方**：右键/键盘触发元素的绑定、视口定位、键盘导航、图标与提示都由官方 `@deepseek-ai/dsh-client-ui-context-menu` 负责；触发点分布在 `ui-chat`、`ui-tool`、`ui-reference`、`ui-sidebar-files`、`ui-workspace`、`ui-sidebar-right` 等包，菜单条目由 `ui-open-in-app`、`ui-file-actions`、`ui-workspace` 及本插件贡献。本插件不绘制菜单。
 - **本插件只贡献官方没有的条目**（官方按 target kind 分发，所以 file/directory 条目同样会出现在工作区文件树等官方 file/directory 目标上，属于增量而非接管）：
   - 文件：**复制相对路径**、**用其他应用打开 ▸**（系统为该文件注册的应用列表 + Windows「选择其他程序…」）；
   - 目录：**复制相对路径**；
@@ -17,14 +17,14 @@
 | 右键位置 | 谁提供 | 菜单项 |
 | --- | --- | --- |
 | 正文纯文本 / 工具结果 | 本插件 | 复制选中内容（有选区时）· 复制整条消息 |
-| 正文里的路径 token（经 Host 校验存在） | 本插件识别 → 官方菜单 | 打开 · 在文件管理器中显示 · 默认应用打开 · 复制路径 · **复制相对路径** · **用其他应用打开 ▸** · 在侧栏/浮窗打开 |
+| 正文里的路径 token（经 Host 校验存在） | 本插件识别 → 官方菜单 | 在侧边栏打开 · 在浮窗中打开 · 在文件夹显示 · 使用默认应用打开 · 复制文件路径 · **复制相对路径** · **用其他应用打开 ▸** |
 | Markdown 文件 / 引用 chip / 工具文件控件 | 官方触发/渲染 | 官方文件条目 + 本插件的**复制相对路径**、**用其他应用打开 ▸** |
-| 链接（Markdown / 正文 URL） | 官方 | 在侧栏打开 · 浏览器打开 · 复制链接 |
-| 图片（消息图片、原图预览） | 官方 + 本插件 | 复制图片 · 下载 · 另存为 · 显示位置 · **复制图片链接** |
-| 工作区行 | 官方 | 官方工作区条目；本插件不注册 workspace 目标 |
+| 链接（Markdown / 正文 URL） | 官方 | 在侧边栏打开 · 外部浏览器打开 · 复制链接地址 |
+| 图片（消息图片、原图预览） | 官方 + 本插件 | 复制图片 · 下载 · 另存为 · 在文件夹显示 · **复制图片链接** |
+| 工作区行 | 官方 | 官方工作区条目（重命名 / 删除 / 在文件夹显示等）；本插件不注册 workspace 目标 |
 | 工作区文件树 | 官方触发/渲染 | 官方文件/目录条目 + 本插件的**复制相对路径**、**用其他应用打开 ▸**（同 file/directory 目标，属增量） |
 
-- 目录（folder）目前只有官方「在文件管理器中显示 / 复制目录路径」与本插件「复制相对路径」；「用默认应用打开 / 用其他应用打开 / 侧栏浮窗打开」是文件专属条目。
+- 目录（folder）目前只有官方「在文件夹显示 / 复制文件夹路径」与本插件「复制相对路径」；「使用默认应用打开 / 用其他应用打开 / 在侧边栏打开 / 在浮窗中打开」是文件专属条目（以上为中文界面实际文案）。
 
 - `用其他应用打开 ▸` 的应用 id 必须先出现在系统的「打开方式」注册列表里；未注册的 id 一律拒绝（防止伪造请求拉起任意程序）。Windows 上对「已注册、且 id 就是 exe 路径」的应用直接 `spawn(exe, [file])`——Harness 原生 `IHandler::Invoke` 对多数 Win32 处理器无效；UWP/AUMID 等非 exe id 仍走原生通道。选择前会校验注册关系，直接启动失败时再回退原生通道并回报具体错误。
 
@@ -38,7 +38,9 @@ Client（浏览器）
       image     → 复制图片链接
       chatMessage（插件自定义目标）→ 复制选中内容 / 复制整条消息
   document 'contextmenu'（捕获阶段，纯计数器）
-      任意新手势（右键 / ContextMenu / Shift+F10）→ 让仍在等 Host 的旧兜底失效
+      任意新手势（右键）→ 让仍在等 Host 的旧兜底失效
+  document 'keydown'（捕获阶段，键盘失效器）
+      ContextMenu / Shift+F10 → 让仍在等 Host 的旧兜底失效
   document 'contextmenu'（冒泡阶段，兜底）
       官方已处理（event.defaultPrevented）→ 让位
       非对话正文 / 输入框 / 工作区           → 让位
@@ -121,7 +123,7 @@ GET /dsh-chat-ctxmenu/status                 # Host 半：应返回 ok:true，re
   ```bash
   dsh plugin --profile desktop add dsh-chat-ctxmenu@1.0.3
   ```
-- 目录（folder）不再有独立的「打开」条目：官方对目录只提供「在文件管理器中显示」（`explorer /select,<目录>`，即打开父目录并选中该目录）与「复制目录路径」，本插件补充「复制相对路径」。
+- 目录（folder）不再有独立的「打开」条目：官方对目录只提供「在文件夹显示」（`explorer /select,<目录>`，即打开父目录并选中该目录）与「复制文件夹路径」，本插件补充「复制相对路径」。
 - 设置项无变化；没有持久化数据。
 
 ## 已知限制
@@ -153,8 +155,10 @@ DSH_VERSION=0.2.2-rc.1 node ../../tooling/check-all.mjs dsh-chat-ctxmenu
 npm pack --dry-run          # 核对 files 清单（9 个文件）
 npm publish
 # 发布完成后把 2.0.0 的版本条目（version / publishTimestamp / 描述）补进 index.json，再提交
-git push origin main
+git push origin main          # 需已配置 remote；本工作区布局下由主 Agent 统一 push
 ```
+
+上面 `../../tooling/check-all.mjs` 是 **dsh_plugin 工作区**的门禁脚本（插件仓库自身只要求 `node --test`）。
 
 本机仍装 0.2.1-rc.5 时，`check-all` 需要 `DSH_VERSION=0.2.2-rc.1` 覆盖（否则 `engines.dsh` 会被判为不满足）；这是本机环境差异，不是插件问题。
 
