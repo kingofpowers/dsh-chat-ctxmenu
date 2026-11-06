@@ -403,7 +403,7 @@ class FakeElement {
 }
 
 const clipboard = { writes: [] }
-const documentListeners = { contextmenu: [] }
+const documentListeners = { contextmenu: [], keydown: [] }
 let caret = null
 
 const messageText = 'see src/app.ts'
@@ -781,6 +781,42 @@ await check('a newer gesture cancels a fallback whose resolve is still pending',
   assert.equal(client.state.opened.length, 0)
 })
 
+await check('a caret URL outranks a path token in the same block', async () => {
+  const text = 'see src/app.ts and https://example.test/x now'
+  caret = { offsetNode: { nodeType: 3, data: text }, offset: 30 }
+  setMessageText(text)
+  rpcReplies.clear()
+  rpcReplies.set('resolve', () => ({ ok: true, results: [{ exists: true, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] }))
+  client.state.opened.length = 0
+  const event = contextMenuEvent(conversationTarget())
+  dispatchContextMenu(event)
+  await flush()
+  assert.equal(client.state.opened.length, 1)
+  assert.equal(client.state.opened[0].target.kind, 'url')
+})
+
+await check('a textless hinted gesture leaves the native menu alone', async () => {
+  caret = null
+  setMessageText('')
+  messageClone.childNodes = []
+  const hinted = new FakeElement({ tagName: 'SPAN', attrs: { title: 'src/app.ts' } })
+  const target = new FakeElement({
+    tagName: 'SPAN',
+    selectors: {
+      '[data-chat-flow-kind]': messageEl,
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]': null,
+      '[title]': hinted,
+    },
+  })
+  rpcReplies.clear()
+  client.state.opened.length = 0
+  const event = contextMenuEvent(target)
+  dispatchContextMenu(event)
+  await flush()
+  assert.equal(event.prevented, 0)
+  assert.equal(client.state.opened.length, 0)
+})
+
 function contribution(id) {
   const found = client.state.contributions.find((entry) => entry.id === id)
   assert.notEqual(found, undefined, `missing contribution ${id}`)
@@ -878,9 +914,30 @@ await check('copy rows fall back to document.execCommand when the clipboard API 
   assert.equal(client.state.notices.length, 1)
 })
 
-await check('teardown removes the fallback listener', () => {
+await check('a keyboard menu gesture cancels a pending fallback resolve', async () => {
+  caret = { offsetNode: { nodeType: 3, data: 'see src/app.ts' }, offset: 8 }
+  setMessageText('see src/app.ts')
+  let release = () => {}
+  rpcReplies.clear()
+  rpcReplies.set('resolve', () => new Promise((resolve) => {
+    release = () => resolve({ ok: true, results: [{ exists: true, absolute: 'C:\\workspace\\src\\app.ts', isDir: false }] })
+  }))
+  client.state.opened.length = 0
+  dispatchContextMenu(contextMenuEvent(conversationTarget()))
+  await flush()
+  const keydownCapture = documentListeners.keydown.find((entry) => entry.capture === true)
+  assert.notEqual(keydownCapture, undefined, 'expected a capture-phase keydown invalidator')
+  keydownCapture.fn({ key: 'ContextMenu', shiftKey: false })
+  release()
+  await flush()
+  await flush()
+  assert.equal(client.state.opened.length, 0)
+})
+
+await check('teardown removes the fallback listeners', () => {
   for (const dispose of client.state.effects) dispose()
   assert.equal(documentListeners.contextmenu.length, 0)
+  assert.equal(documentListeners.keydown.length, 0)
 })
 
 // ---------------------------------------------------------------------------

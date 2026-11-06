@@ -5,8 +5,7 @@
  * (`@deepseek-ai/dsh-client-ui-context-menu`). That framework owns every
  * right-click gesture it is bound to, plus the shared menu presentation
  * (positioning, keyboard navigation, icons, toasts). This plugin no longer
- * renders a menu of its own and no longer installs a capture-phase listener:
- * the gesture hook belongs to the official feature.
+ * renders a menu of its own: the gesture hook belongs to the official feature.
  *
  * What remains ours, contributed into the official menu:
  *
@@ -18,16 +17,21 @@
  *   - `chatMessage` → a plugin-defined target used for plain message text:
  *                 "Copy selection" and "Copy whole message".
  *
- * One bubble-phase fallback listener covers gestures the official chat surface
- * does not claim: the official triggers sit on their own elements and call
- * `preventDefault()`, so this listener sees `event.defaultPrevented` and backs
- * off. Gestures outside conversation content — the workspace rows, the
- * workspace file tree, any other surface — are left entirely to the official
- * UI. For conversation prose the fallback only decides *which official target*
- * the click belongs to: a path-shaped token (relative path, `~`, UNC,
- * `path:line`, bare filename) is verified by the Host and opens the official
- * `file`/`directory` menu; a URL opens the official `url` menu; anything else
- * opens the plugin's `chatMessage` menu.
+ * Two document listeners cooperate for gestures the official chat surface does
+ * not claim:
+ *
+ *   - a capture-phase counter only — it never calls preventDefault and never
+ *     opens anything; it invalidates a pending fallback resolve whenever a
+ *     newer gesture happens (pointer or keyboard);
+ *   - a bubble-phase handler that checks `event.defaultPrevented` (official
+ *     triggers sit on their own elements, call preventDefault + stopPropagation,
+ *     and are therefore never stolen), then decides *which official target* the
+ *     gesture belongs to. Gestures outside conversation content — the workspace
+ *     rows, any other surface — are left entirely to the official UI. A URL
+ *     under the caret outranks any path token in the same block; otherwise a
+ *     path-shaped token (relative path, `~`, UNC, `path:line`, bare filename) is
+ *     verified by the Host and opens the official `file`/`directory` menu; any
+ *     other text opens the plugin's `chatMessage` menu.
  *
  * Transport: POST /dsh-chat-ctxmenu/rpc  { action, args } -> { ok, ... }
  * Only the actions the official menu cannot provide live there: `resolve`
@@ -354,9 +358,11 @@ window.__ModuleLoader__.load({
 
     /**
      * `scanPaths` deliberately excludes URL tokens (they are not file paths), so
-     * a URL under the caret is looked up in the caret's own text instead. When
-     * the pointer is not on a text node, an unambiguous URL in the surrounding
-     * block wins.
+     * a URL under the caret is looked up in the caret's own text instead. A caret
+     * hit is authoritative: it must outrank path tokens elsewhere in the same
+     * text block, otherwise right-clicking a URL next to a path opens the file
+     * menu. When the pointer is not on a text node, an unambiguous URL in the
+     * surrounding block wins.
      */
     function detectTextUrl(target, caret) {
       if (caret !== null) {
@@ -366,7 +372,7 @@ window.__ModuleLoader__.load({
           if (caret.offset < start - 1 || caret.offset > end + 1) continue
           const href = trimToken(match[0])
           if (href.length < 8) continue
-          return { href, text: href }
+          return { href, text: href, fromCaret: true }
         }
         return null
       }
@@ -375,7 +381,7 @@ window.__ModuleLoader__.load({
         : null
       if (block === null || block === undefined) return null
       const urls = scanUrls(block.innerText !== undefined ? block.innerText : (block.textContent ?? ''))
-      return urls.length === 1 ? { href: urls[0].href, text: urls[0].href } : null
+      return urls.length === 1 ? { href: urls[0].href, text: urls[0].href, fromCaret: false } : null
     }
 
     function buildCandidates(target, caret, messageEl, hint) {
@@ -684,10 +690,13 @@ window.__ModuleLoader__.load({
             area.style.top = '-1000px'
             area.style.opacity = '0'
             document.body.appendChild(area)
-            area.select()
-            const copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
-            document.body.removeChild(area)
-            return copied === true
+            try {
+              area.select()
+              const copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+              return copied === true
+            } finally {
+              document.body.removeChild(area)
+            }
           } catch {
             return false
           }
@@ -868,6 +877,13 @@ window.__ModuleLoader__.load({
           const openSharedMenu = async (prepared, token) => {
             const sessionId = currentSessionId(sessions)
             const cwd = cwdFor(sessionId)
+            const point = { x: prepared.x, y: prepared.y }
+            // A URL directly under the caret is authoritative: path tokens
+            // elsewhere in the same block must not hijack it.
+            if (prepared.caretUrl === true && prepared.link !== null && sessionId !== undefined) {
+              openTarget('url', { sessionId, url: prepared.link.href }, point)
+              return
+            }
             let found = null
             if (prepared.candidates.length > 0 && sessionId !== undefined) {
               const reply = await rpc('resolve', { paths: prepared.candidates.map((entry) => entry.raw), cwd, sessionId })
@@ -875,7 +891,6 @@ window.__ModuleLoader__.load({
               found = pickExisting(reply, prepared.candidates)
             }
             if (token !== gesture) return
-            const point = { x: prepared.x, y: prepared.y }
             if (found !== null && sessionId !== undefined) {
               openTarget(found.isDir ? 'directory' : 'file', { sessionId, path: found.absolute }, point)
               return
@@ -922,10 +937,15 @@ window.__ModuleLoader__.load({
               const caret = caretInfoAt(x, y)
               const selectionText = readSelectionWithin(messageEl)
               const messageText = extractMessageText(messageEl)
-              const link = detectLink(target) ?? detectTextUrl(target, caret)
+              const textUrl = detectTextUrl(target, caret)
+              const link = detectLink(target) ?? textUrl
+              const caretUrl = textUrl !== null && textUrl.fromCaret === true
               const candidates = buildCandidates(target, caret, messageEl, detectElementHint(target))
-              if (selectionText === '' && messageText === '' && link === null && candidates.length === 0) return
-              prepared = { x, y, selectionText, messageText, link, candidates }
+              // With no extractable text and no caret URL, the only thing this
+              // gesture could offer is a hinted path; leave the native menu
+              // instead of swallowing it for a menu that may not open.
+              if (selectionText === '' && messageText === '' && (link === null || caretUrl !== true)) return
+              prepared = { x, y, selectionText, messageText, link, caretUrl, candidates }
             } catch {
               return
             }
@@ -935,11 +955,21 @@ window.__ModuleLoader__.load({
             void openSharedMenu(prepared, gesture)
           }
 
+          // Official keyboard triggers (ContextMenu / Shift+F10) call
+          // preventDefault() on keydown instead of dispatching a contextmenu
+          // event, so they need their own invalidation.
+          const invalidatePendingKeyGesture = (event) => {
+            if (event === null || event === undefined) return
+            if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey === true)) gesture += 1
+          }
+
           document.addEventListener('contextmenu', invalidatePendingGesture, true)
           document.addEventListener('contextmenu', onContextMenu)
+          document.addEventListener('keydown', invalidatePendingKeyGesture, true)
           return () => {
             document.removeEventListener('contextmenu', invalidatePendingGesture, true)
             document.removeEventListener('contextmenu', onContextMenu)
+            document.removeEventListener('keydown', invalidatePendingKeyGesture, true)
           }
         }, 'chat-ctxmenu: prose fallback')
       },
