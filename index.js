@@ -10,11 +10,11 @@
  *                official file/directory menu a target that really exists.
  *   2. apps    — list the applications the OS registered for that exact file,
  *                so the contributed "Open with ▸" submenu matches the shell.
- *   3. open    — launch one of those applications (and the OS "choose another
- *                app" dialog), reusing the Harness' authorized path-opening
- *                channel (`sessionController.openWorkspacePath` /
- *                `workspacePathApplications`) with a direct-spawn fallback for
- *                Windows handlers that the native adapter cannot invoke.
+ *   3. openWith — launch one of those applications (and the OS "choose another
+ *                 app" dialog), reusing the Harness' authorized path-opening
+ *                 channel (`sessionController.openWorkspacePath` /
+ *                 `workspacePathApplications`) with a direct-spawn fallback for
+ *                 Windows handlers that the native adapter cannot invoke.
  *
  * Opening, revealing and copying paths are the official `ui-open-in-app`
  * contributions; this plugin does not duplicate them.
@@ -331,15 +331,16 @@ export function apply(ctx) {
     return code === undefined ? { ok: false, error: 'native-open-failed', detail: message } : { ok: false, error: code, detail: message }
   }
 
-  const nativeOpen = async (absolute, mode, application) => {
+  /** Open one file with a named registered application through the native channel. */
+  const nativeOpen = async (absolute, application) => {
     const controller = getSessionController()
     if (controller === undefined || typeof controller.openWorkspacePath !== 'function') return null
     const canOpen = nativeCanOpen()
     if (canOpen === false) return { ok: false, error: 'native-open-unavailable' }
     const { signal, release } = newSignal()
     try {
-      const request = mode === 'reveal' ? { action: 'reveal', path: absolute } : { path: absolute }
-      if (mode === 'openWith' && typeof application === 'string' && application !== '') request.application = application
+      const request = { path: absolute }
+      if (typeof application === 'string' && application !== '') request.application = application
       const value = await controller.openWorkspacePath(request, signal)
       if (value !== undefined && value !== null && value.opened === true) return { ok: true }
       return { ok: false, error: 'native-open-refused' }
@@ -440,11 +441,11 @@ export function apply(ctx) {
         if (executable.exists !== true || executable.isDir === true) return { ok: false, error: 'application-missing' }
         if (await spawnDetached([executable.absolute, described.absolute])) return { ok: true }
         // Fall back to the native handler once the direct launch could not start.
-        const native = await nativeOpen(described.absolute, 'openWith', application)
+        const native = await nativeOpen(described.absolute, application)
         if (native !== null && native.ok === true) return native
         return { ok: false, error: 'application-launch-failed', detail: native === null ? undefined : native.detail }
       }
-      const native = await nativeOpen(described.absolute, 'openWith', application)
+      const native = await nativeOpen(described.absolute, application)
       if (native === null) return { ok: false, error: 'open-with-unsupported' }
       return native
     },
